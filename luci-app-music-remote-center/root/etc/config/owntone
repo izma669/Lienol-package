@@ -1,7 +1,0 @@
-
-config owntone
-	option port '3689'
-	option directories '/mnt/sda1/media/music'
-	option enabled '0'
-	option db_path '/mnt/sda1/config/songs.db'
-
