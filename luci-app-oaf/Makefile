@@ -11,5 +11,5 @@ LUCI_DEPENDS:=+appfilter +kmod-oaf +luci-compat
 PKG_NAME:=luci-app-oaf
 PKG_VERSION:=6.1.4
 PKG_RELEASE:=1
-include $(TOPDIR)/feeds/luci/luci.mk
+include $(TOPDIR)/luci.mk
 # call BuildPackage - OpenWrt buildroot signature
