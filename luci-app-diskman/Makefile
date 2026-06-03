@@ -27,7 +27,7 @@ LUCI_DESCRIPTION:=Disk Manager interface for LuCI
 define Package/$(PKG_NAME)/config
 config PACKAGE_$(PKG_NAME)_INCLUDE_blockd-mount
 	depends on PACKAGE_$(PKG_NAME)
-	bool "Include blockd-automounting"
+	bool "Include blockd-mount"
 	default y
 config PACKAGE_$(PKG_NAME)_INCLUDE_btrfs_progs
 	depends on PACKAGE_$(PKG_NAME)
