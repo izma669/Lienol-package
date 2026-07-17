@@ -30,7 +30,7 @@ general {
 }
 
 library {
-	name = "My Music on OpenWrt"
+	name = "My Music on owntone"
 	port = $(uci_get_by_type owntone port 3689)
 	directories = { "$(uci_get_by_type owntone directories)" }
 	podcasts = { "/Podcasts" }
