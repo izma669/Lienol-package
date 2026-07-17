@@ -67,6 +67,7 @@ CONFIGURE_ARGS += \
 	--without-pulseaudio
 
 TARGET_CFLAGS += $(FPIC)
+TARGET_CFLAGS += -DHAVE_SQLITE3_LOAD_EXTENSION=1
 
 define Package/owntone/install
 	$(INSTALL_DIR) $(1)/usr/sbin
