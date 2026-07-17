@@ -5,8 +5,8 @@ function index()
 		return
 	end
 
-	entry({"admin", "services", "owntone"}, cbi("owntone"), _("Music Remote Center")).dependent = true
-	entry({"admin", "services", "owntone", "status"}, call("act_status")).leaf = true
+	entry({"admin", "nas", "owntone"}, cbi("owntone"), _("Music Remote Center")).dependent = true
+	entry({"admin", "nas", "owntone", "status"}, call("act_status")).leaf = true
 end
 
 function act_status()
