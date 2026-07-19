@@ -10,7 +10,7 @@ PKG_LICENSE:=AGPL-3.0
 LUCI_TITLE:=Disk Manager interface for LuCI
 LUCI_DEPENDS:= \
 	+luci-compat +blkid +e2fsprogs +parted +smartmontools \
-	+kmod-fs-exfat +exfat-mkfs \
+	+kmod-fs-exfat +exfat-mkfs +kmod-fs-ext4 \
 	+exfat-fsck +kmod-nls-cp932 +kmod-nls-cp936 +kmod-nls-cp950 \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_blockd:blockd \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_btrfs_progs:btrfs-progs \
