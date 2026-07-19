@@ -137,6 +137,6 @@ rm -f $${IPKG_INSTROOT}/usr/share/passwall/rules/*.nft
 exit 0
 endef
 
-include ../../luci.mk
+include $(TOPDIR)/feeds/luci/luci.mk
 
 # call BuildPackage - OpenWrt buildroot signature
