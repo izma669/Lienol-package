@@ -9,9 +9,10 @@ PKG_LICENSE:=AGPL-3.0
 
 LUCI_TITLE:=Disk Manager interface for LuCI
 LUCI_DEPENDS:= \
-	+luci-compat +blkid +e2fsprogs +parted +smartmontools +dosfstools \
-	+kmod-fs-msdos +kmod-fs-ntfs3 +kmod-fs-exfat +exfat-mkfs \
+	+luci-compat +blkid +e2fsprogs +parted +smartmontools \
+	+kmod-fs-exfat +exfat-mkfs \
 	+exfat-fsck +kmod-nls-cp932 +kmod-nls-cp936 +kmod-nls-cp950 \
+	+PACKAGE_$(PKG_NAME)_INCLUDE_blockd:blockd \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_btrfs_progs:btrfs-progs \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_lsblk:lsblk \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_mdadm:mdadm \
@@ -21,6 +22,12 @@ LUCI_DEPENDS:= \
 	+PACKAGE_$(PKG_NAME)_INCLUDE_kmod_md_linears:kmod-md-linear
 
 define Package/luci-app-diskman/config
+
+config PACKAGE_$(PKG_NAME)_INCLUDE_blockd
+	depends on PACKAGE_$(PKG_NAME)
+	bool "Include blockd-automonut"
+	default y
+
 config PACKAGE_$(PKG_NAME)_INCLUDE_btrfs_progs
 	depends on PACKAGE_$(PKG_NAME)
 	bool "Include btrfs-progs"
