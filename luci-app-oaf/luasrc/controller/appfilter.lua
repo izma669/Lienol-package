@@ -7,20 +7,20 @@ function index()
 	end
 	
 	local page
-	entry({"admin", "services", "appfilter"}, alias("admin", "services", "appfilter", "user_list"),_("App Filter"), 10).dependent = true
+	entry({"admin", "control", "appfilter"}, alias("admin", "control", "appfilter", "user_list"),_("App Filter"), 10).dependent = true
 
 
-	entry({"admin", "services", "appfilter", "user_list"}, 
+	entry({"admin", "control", "appfilter", "user_list"}, 
 		arcombine(cbi("appfilter/user_list",{hideapplybtn=true, hidesavebtn=true, hideresetbtn=true}), 
 		cbi("appfilter/dev_status", {hideapplybtn=true, hidesavebtn=true, hideresetbtn=true})),
 		_("User List"), 20).leaf=true
 
-	entry({"admin", "services", "appfilter", "time"}, cbi("appfilter/time", {hideapplybtn=true, hidesavebtn=true, hideresetbtn=true}), _("Time Configuration"), 25).leaf=true
-	entry({"admin", "services", "appfilter", "app_filter"}, cbi("appfilter/app_filter", {hideapplybtn=true, hidesavebtn=true, hideresetbtn=true}), _("App Filter"), 21).leaf=true
-	entry({"admin", "services", "appfilter", "feature"}, cbi("appfilter/feature", {hideapplybtn=true, hidesavebtn=true, hideresetbtn=true}), _("App Feature Library"), 26).leaf=true
+	entry({"admin", "control", "appfilter", "time"}, cbi("appfilter/time", {hideapplybtn=true, hidesavebtn=true, hideresetbtn=true}), _("Time Configuration"), 25).leaf=true
+	entry({"admin", "control", "appfilter", "app_filter"}, cbi("appfilter/app_filter", {hideapplybtn=true, hidesavebtn=true, hideresetbtn=true}), _("App Filter"), 21).leaf=true
+	entry({"admin", "control", "appfilter", "feature"}, cbi("appfilter/feature", {hideapplybtn=true, hidesavebtn=true, hideresetbtn=true}), _("App Feature Library"), 26).leaf=true
 
-	entry({"admin", "services", "appfilter", "user"}, cbi("appfilter/user", {hideapplybtn=true, hidesavebtn=true, hideresetbtn=true}), _("User Configuration"), 24).leaf=true
-	entry({"admin", "services", "appfilter", "advance"}, cbi("appfilter/advance", {hideapplybtn=true, hidesavebtn=true, hideresetbtn=true}), _("Advanced Settings"), 27).leaf=true
+	entry({"admin", "control", "appfilter", "user"}, cbi("appfilter/user", {hideapplybtn=true, hidesavebtn=true, hideresetbtn=true}), _("User Configuration"), 24).leaf=true
+	entry({"admin", "control", "appfilter", "advance"}, cbi("appfilter/advance", {hideapplybtn=true, hidesavebtn=true, hideresetbtn=true}), _("Advanced Settings"), 27).leaf=true
 	entry({"admin", "network", "user_status"}, call("user_status"), nil).leaf = true
 	entry({"admin", "network", "get_user_list"}, call("get_user_list"), nil).leaf = true
 	entry({"admin", "network", "dev_visit_list"}, call("get_dev_visit_list"), nil).leaf = true
