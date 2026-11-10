@@ -1,0 +1,13 @@
+
+config gmediarender 'main'
+	option enabled '1'
+	option friendly_name 'UPNP/DLNA-Speaker'
+	option interface 'br-lan'
+	option port '49152'
+	option auto_download '1'
+	option download_dir '/mnt/mmcblk0p1/music'
+	option enable_log '0'
+	option logfile '/var/log/gmediarender.log'
+	option log_cleanup '1'
+	option log_limit_mb '5'
+

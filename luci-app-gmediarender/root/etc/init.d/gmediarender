@@ -1,0 +1,40 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/bin/gmediarender
+
+start_service() {
+    config_load gmediarender
+
+    config_get_bool enabled main enabled 0
+    [ "$enabled" -eq 1 ] || return 0
+
+    config_get      friendly_name main friendly_name "OpenWrt-Speaker"
+    config_get      interface     main interface     "br-lan"
+    config_get      port          main port          "49152"
+
+
+    procd_open_instance
+    
+    # 使用 procd_append_param 安全拼接参数
+    procd_set_param command "$PROG"
+    procd_append_param command -f "$friendly_name"
+    procd_append_param command -I "$interface"
+    procd_append_param command -p "$port"
+
+    # 纯 UPnP 模式，无需 --logfile
+
+    procd_set_param respawn 3600 5 5
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_set_param file /etc/config/gmediarender
+    procd_close_instance
+}
+
+stop_service() {
+    # 强制清理残留进程，防止端口被占死
+    killall -9 gmediarender 2>/dev/null
+}
