@@ -1,3 +1,4 @@
 config vhusbd
-	option enabled '0'
+	option enabled '1'
 	option ExtAccess '0'
+	option IPv6Access '0'

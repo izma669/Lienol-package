@@ -1,20 +1,427 @@
-<script type="text/javascript">//<![CDATA[
-XHR.poll(5, '<%=url([[admin]], [[services]], [[vhusbd]], [[status]])%>', null,
-    function(x, data) {
-        var status = document.getElementById('vhusbd_status');
-        if (data && status) {
-            if (data.running) {
-                status.innerHTML = "<em><b style='color:green;'>VirtualHere USB Server 正在运行</b></em>";
-            } else {
-                status.innerHTML = "<em><b style='color:red;'>VirtualHere USB Server 未运行</b></em>";
+<%+header%>
+
+<style>
+    .vhusbd-card { padding: 15px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 15px; background: #fff; }
+    .status-badge { padding: 4px 8px; border-radius: 4px; color: #fff; font-weight: bold; background-color: #999; }
+    .status-running { background-color: #5cb85c; }
+    .status-stopped { background-color: #d9534f; }
+    .fw-status { font-weight: bold; margin-right: 20px; }
+    .fw-on { color: #5cb85c; }
+    .fw-off { color: #d9534f; }
+    .hint { color: #666; font-size: 12px; line-height: 1.7; }
+    .warn { color: #c0392b; font-weight: bold; }
+    .master-row { display: flex; align-items: flex-start; gap: 10px; margin-top: 10px; padding: 12px; background: #f7f9fa; border: 1px solid #e3e3e3; border-radius: 4px; cursor: pointer; }
+    .master-row input[type="checkbox"] { width: 18px; height: 18px; margin-top: 2px; flex: 0 0 auto; }
+    .master-label { display: block; }
+    .master-label .hint { display: block; margin-top: 4px; }
+    .cbi-button[disabled] { opacity: .5; cursor: not-allowed; }
+    #action-msg { position: fixed; top: 70px; right: 24px; z-index: 9999; max-width: 420px; max-width: min(420px, 80vw); padding: 10px 14px; border: 1px solid #ddd; border-radius: 4px; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.18); font-weight: bold; word-wrap: break-word; display: none; }
+    #log-area { width: 100%; height: 220px; box-sizing: border-box; font-family: monospace; background: #f5f5f5; border: 1px solid #ccc; padding: 10px; overflow: auto; display: none; margin-top: 10px; white-space: pre-wrap; }
+</style>
+
+<div class="cbi-map">
+    <h2>VirtualHere USB Server</h2>
+
+    <div class="vhusbd-card">
+        <h3>简介与客户端下载</h3>
+        <p>VirtualHere USB Server 用途：可实现通过网络挂载 USB 设备。</p>
+        <p>从 <a href="http://www.virtualhere.com/usb_client_software" target="_blank">官网</a> 下载对应平台的客户端程序运行并联机。</p>
+    </div>
+
+    <div class="vhusbd-card">
+        <h3>启用 / 停用（总开关）</h3>
+        <p>开机自启：<b><span id="boot-state" class="fw-off">获取中...</span></b></p>
+        <label class="master-row" for="service-enabled">
+            <input type="checkbox" id="service-enabled" onchange="toggleService(this.checked)">
+            <span class="master-label">
+                <b>启用 VirtualHere 服务（总开关）</b>
+                <span class="hint">关闭后立即停止服务，并取消开机自启；重新打开后立即启动，并恢复开机自启。</span>
+            </span>
+        </label>
+        <p class="hint">
+            开关保存在 <code>/etc/config/vhusbd</code> 的 <code>enabled</code> 选项中。
+            停用时会立即停止服务并移除 <code>/etc/rc.d</code> 开机启动项；即使启动项被重新加回来，
+            <code>/etc/init.d/vhusbd</code> 在启动时也会再次检查该选项，为 <code>0</code> 时直接拒绝启动。
+        </p>
+        <p id="enabled-warning" class="warn" style="display:none;"></p>
+    </div>
+
+    <div class="vhusbd-card">
+        <h3>服务控制</h3>
+        <p>当前状态：<span id="service-status" class="status-badge">获取中...</span></p>
+        <button id="btn-start" class="cbi-button cbi-button-apply" onclick="doAction('start')">启动服务</button>
+        <button id="btn-stop" class="cbi-button cbi-button-reset" onclick="doAction('stop')">停止服务</button>
+        <button id="btn-restart" class="cbi-button cbi-button-action" onclick="doAction('restart')">重启服务</button>
+        <p class="hint">
+            这里的“停止服务”只停止本次运行，不改变开机自启设置。
+            如果希望路由器重启后也不启动，请关闭上面的“启用 VirtualHere 服务”开关。
+        </p>
+    </div>
+
+    <div class="vhusbd-card">
+        <h3>服务器重命名</h3>
+        <p>当前名称：<b><span id="current-server-name">获取中...</span></b></p>
+        <input type="text" id="server-name-input" style="width: 250px; padding: 5px; margin-right: 10px;" maxlength="64" placeholder="输入新的服务器名称">
+        <button class="cbi-button cbi-button-action" onclick="doRename()">保存名称</button>
+        <p class="hint">修改的是 <code>/usr/bin/config.ini</code> 中的 <code>ServerName</code>；服务正在运行时会自动重启使其生效，未运行则下次启动生效。</p>
+    </div>
+
+    <div class="vhusbd-card">
+        <h3>网络访问控制</h3>
+        <p>
+            <span class="fw-status">外网访问：<span id="wan-status" class="fw-off">获取中</span></span>
+            <span class="fw-status">IPv6 访问：<span id="ipv6-status" class="fw-off">获取中</span></span>
+        </p>
+        <button class="cbi-button cbi-button-action" onclick="toggleFw('wan')">切换外网开关</button>
+        <button class="cbi-button cbi-button-action" onclick="toggleFw('ipv6')">切换 IPv6 开关</button>
+        <p id="fw-note" class="hint">* 网络访问偏好会保存到 UCI；服务停用时实际规则关闭，启用服务后自动恢复。</p>
+    </div>
+
+    <div class="vhusbd-card">
+        <h3>一键注册</h3>
+        <p>点击下方按钮，自动读取 MAC 并替换 <code>/usr/bin/config.ini</code> 中的序列号。</p>
+        <button class="cbi-button cbi-button-apply" onclick="doRegister()">一键注册</button>
+        <p class="hint">如果注册后客户端仍提示未注册，请点上方的“重启服务”让新序列号生效。</p>
+    </div>
+
+    <div class="vhusbd-card">
+        <h3>系统日志</h3>
+        <button class="cbi-button cbi-button-action" onclick="toggleLogs()">查看日志</button>
+        <pre id="log-area"></pre>
+    </div>
+
+    <div id="action-msg"></div>
+</div>
+
+<script type="text/javascript">
+    var busy = false;
+    var enabledState = false;
+    var fwState = { wan: false, ipv6: false };
+    var msgTimer = null;
+
+    function apiUrl(action, extra) {
+        var u = '<%=url("admin/services/vhusbd/action")%>?action=' + encodeURIComponent(action);
+        if (extra) {
+            u += '&' + extra;
+        }
+        return u + '&_=' + new Date().getTime();
+    }
+
+    function apiGet(action, extra, callback) {
+        var xhr = new XMLHttpRequest();
+        var finished = false;
+        var timer = null;
+
+        function done(obj) {
+            if (finished) {
+                return;
             }
+            finished = true;
+            if (timer) {
+                clearTimeout(timer);
+            }
+            callback(obj);
+        }
+
+        timer = setTimeout(function() {
+            if (finished) {
+                return;
+            }
+            finished = true;
+            try { xhr.abort(); } catch (e) {}
+            callback({ responseText: 'ERROR:请求超时，请刷新页面重试' });
+        }, 20000);
+
+        try {
+            xhr.open('GET', apiUrl(action, extra), true);
+            xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState === 4) {
+                    if (xhr.status === 200) {
+                        done(xhr);
+                    } else {
+                        done({ responseText: 'ERROR:请求失败（HTTP ' + xhr.status + '）' });
+                    }
+                }
+            };
+            xhr.onerror = function() {
+                done({ responseText: 'ERROR:网络请求失败，请刷新页面重试' });
+            };
+            xhr.send(null);
+        } catch (e) {
+            done({ responseText: 'ERROR:请求发送失败' });
         }
     }
-);
-//]]>
+
+    function responseText(x) {
+        return (x && x.responseText ? x.responseText : '').replace(/^\s+|\s+$/g, '');
+    }
+
+    function setMsg(text, color) {
+        var el = document.getElementById('action-msg');
+        if (!el) {
+            return;
+        }
+        if (text.length > 300) {
+            text = text.substring(0, 300) + '…';
+        }
+        el.textContent = text;
+        el.style.color = color || '#333';
+        el.style.display = text ? 'block' : 'none';
+
+        if (msgTimer) {
+            clearTimeout(msgTimer);
+            msgTimer = null;
+        }
+        if (color === 'green' && text) {
+            msgTimer = setTimeout(function() {
+                el.style.display = 'none';
+            }, 8000);
+        }
+    }
+
+    function handleResult(x, onSuccess) {
+        var res = responseText(x);
+        if (res.indexOf('SUCCESS:') === 0) {
+            setMsg(res.substring(8), 'green');
+            if (onSuccess) {
+                onSuccess();
+            }
+        } else if (res.indexOf('ERROR:') === 0) {
+            setMsg(res.substring(6), 'red');
+            refreshState();
+        } else {
+            setMsg(res || '操作失败：没有收到服务器响应', 'red');
+            refreshState();
+        }
+    }
+
+    function renderFwNote() {
+        var note = document.getElementById('fw-note');
+        if (!note) {
+            return;
+        }
+        note.textContent = enabledState
+            ? '* 开关会立即生效，并保存到 UCI；重启后自动恢复。'
+            : '* 服务已停用：网络访问偏好已保存，但当前规则已关闭；启用服务后自动恢复。';
+    }
+
+    function refreshState() {
+        apiGet('get_state', null, function(x) {
+            if (busy) {
+                return;
+            }
+
+            var res = responseText(x);
+            if (res.indexOf('STATE:') !== 0) {
+                return;
+            }
+
+            var parts = res.substring(6).split(',');
+            var running = parts[0] === '1';
+            var enabled = parts[1] === '1';
+            var linked  = parts[2] === '1';
+            enabledState = enabled;
+
+            var badge = document.getElementById('service-status');
+            badge.textContent = running ? '运行中' : '已停止';
+            badge.className = 'status-badge ' + (running ? 'status-running' : 'status-stopped');
+
+            if (!busy) {
+                document.getElementById('service-enabled').checked = enabled;
+            }
+
+            var bootState = document.getElementById('boot-state');
+            bootState.textContent = enabled ? '已启用' : '已停用';
+            bootState.className = enabled ? 'fw-on' : 'fw-off';
+
+            document.getElementById('btn-start').disabled = !enabled;
+            document.getElementById('btn-restart').disabled = !enabled;
+
+            var warn = document.getElementById('enabled-warning');
+            if (enabled && !linked) {
+                warn.textContent = '警告：/etc/rc.d 启动链接缺失，重启后不会自动启动。请关闭再重新打开上面的开关以修复。';
+                warn.style.display = 'block';
+            } else {
+                warn.textContent = '';
+                warn.style.display = 'none';
+            }
+
+            renderFwNote();
+        });
+    }
+
+    function scheduleRefresh() {
+        refreshState();
+        setTimeout(refreshState, 1500);
+    }
+
+    function updateFwStatus() {
+        apiGet('get_prefs', null, function(x) {
+            var res = responseText(x);
+            if (res.indexOf('PREFS:') !== 0) {
+                return;
+            }
+
+            var parts = res.substring(6).split(',');
+            fwState.wan = parts[0] === '1';
+            fwState.ipv6 = parts[1] === '1';
+
+            var wanEl = document.getElementById('wan-status');
+            var ipv6El = document.getElementById('ipv6-status');
+            wanEl.textContent = fwState.wan ? '已开启' : '已关闭';
+            wanEl.className = fwState.wan ? 'fw-on' : 'fw-off';
+            ipv6El.textContent = fwState.ipv6 ? '已开启' : '已关闭';
+            ipv6El.className = fwState.ipv6 ? 'fw-on' : 'fw-off';
+            renderFwNote();
+        });
+    }
+
+    function toggleService(on) {
+        if (busy) {
+            document.getElementById('service-enabled').checked = !on;
+            return;
+        }
+
+        var cb = document.getElementById('service-enabled');
+        busy = true;
+        cb.disabled = true;
+
+        // 立即反馈，最终状态以服务器返回为准
+        document.getElementById('boot-state').textContent = on ? '已启用' : '已停用';
+        document.getElementById('boot-state').className = on ? 'fw-on' : 'fw-off';
+        document.getElementById('btn-start').disabled = !on;
+        document.getElementById('btn-restart').disabled = !on;
+
+        setMsg(on ? '正在启用并启动服务...' : '正在停用并停止服务...', 'blue');
+
+        apiGet(on ? 'enable' : 'disable', null, function(x) {
+            cb.disabled = false;
+            busy = false;
+            handleResult(x, function() {
+                scheduleRefresh();
+                updateFwStatus();
+            });
+        });
+    }
+
+    function toggleFw(type) {
+        var newVal = fwState[type] ? '0' : '1';
+        setMsg('正在处理...', 'blue');
+
+        apiGet('set_fw', 'type=' + encodeURIComponent(type) + '&val=' + newVal, function(x) {
+            handleResult(x, function() {
+                updateFwStatus();
+                refreshState();
+            });
+        });
+    }
+
+    function doAction(act) {
+        if (busy) {
+            return;
+        }
+
+        busy = true;
+        setMsg('正在执行...', 'blue');
+
+        apiGet(act, null, function(x) {
+            busy = false;
+            handleResult(x, function() {
+                scheduleRefresh();
+                updateFwStatus();
+            });
+        });
+    }
+
+    function doRename() {
+        var input = document.getElementById('server-name-input');
+        var name = input.value.replace(/^\s+|\s+$/g, '');
+        if (name === '') {
+            setMsg('服务器名称不能为空', 'red');
+            return;
+        }
+        if (busy) {
+            return;
+        }
+
+        busy = true;
+        setMsg('正在修改名称...', 'blue');
+
+        apiGet('rename', 'name=' + encodeURIComponent(name), function(x) {
+            busy = false;
+            handleResult(x, function() {
+                document.getElementById('current-server-name').textContent = name;
+                input.value = '';
+                scheduleRefresh();
+            });
+            setTimeout(getServerName, 800);
+        });
+    }
+
+    function getServerName() {
+        apiGet('get_name', null, function(x) {
+            var res = responseText(x);
+            if (res.indexOf('NAME:') !== 0) {
+                return;
+            }
+            var name = res.substring(5);
+            document.getElementById('current-server-name').textContent = name === '' ? '未设置' : name;
+        });
+    }
+
+    function doRegister() {
+        if (busy) {
+            return;
+        }
+
+        busy = true;
+        setMsg('正在注册，请稍候...', 'blue');
+
+        apiGet('register', null, function(x) {
+            busy = false;
+            var res = responseText(x);
+            if (res.indexOf('SUCCESS:') === 0) {
+                setMsg(res.substring(8), 'green');
+            } else if (res.indexOf('ERROR:') === 0) {
+                setMsg(res.substring(6), 'red');
+            } else {
+                setMsg(res || '注册失败', 'red');
+            }
+        });
+    }
+
+    function toggleLogs() {
+        var logArea = document.getElementById('log-area');
+        if (logArea.style.display === 'block') {
+            logArea.style.display = 'none';
+            return;
+        }
+
+        logArea.style.display = 'block';
+        logArea.textContent = '加载中...';
+        apiGet('logs', null, function(x) {
+            logArea.textContent = responseText(x) || '暂无日志信息';
+        });
+    }
+
+    function initPage() {
+        refreshState();
+        updateFwStatus();
+        getServerName();
+
+        setInterval(function() {
+            if (!busy) {
+                refreshState();
+            }
+        }, 15000);
+    }
+
+    if (window.addEventListener) {
+        window.addEventListener('load', initPage);
+    } else {
+        window.onload = initPage;
+    }
 </script>
-<fieldset class="cbi-section">
-    <p id="vhusbd_status">
-        <em><%:Collecting data...%></em>
-    </p>
-</fieldset>
+
+<%+footer%>
