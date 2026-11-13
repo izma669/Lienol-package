@@ -98,12 +98,19 @@ autoplay_library() {
     fi
 
      # 阶段2：等音乐库扫描完成（最多再等 120 秒）
+    sleep 15
+
     local j=0
     while [ $j -lt 120 ]; do
         # 改用 /api/library，检查是否返回了歌曲数量（正常时字段为 "songs"）
         local library_json=$(curl -s --connect-timeout 2 "${url}/library" 2>/dev/null)
-        if echo "$library_json" | grep -qE '"songs"|"tracks"|"uri"'; then
-            break
+        local songs_n=$(echo "$library_json" | sed -n 's/.*"songs": *\([0-9][0-9]*\).*/\1/p')
+        if echo "$library_json" | grep -q '"updating": false' && [ -n "$songs_n" ] && [ "$songs_n" -gt 0 ]; then
+            sleep 6
+            local library_json2=$(curl -s --connect-timeout 2 "${url}/library" 2>/dev/null)
+            if echo "$library_json2" | grep -q '"updating": false'; then
+                break
+            fi
         fi
         sleep 2
         j=$((j + 2))
@@ -118,14 +125,45 @@ autoplay_library() {
     sleep 10
 
     # 1. 先清空队列（减轻单次请求压力）
-    curl -s -X PUT "${url}/queue/clear" >/dev/null 2>&1
-    sleep 2
+    local k=0
+    while [ $k -lt 4 ]; do
+        curl -s -X PUT "${url}/queue/clear" >/dev/null 2>&1
+        sleep 2
+        local q0=$(curl -s --connect-timeout 2 "${url}/queue" 2>/dev/null | sed -n 's/.*"count": *\([0-9][0-9]*\).*/\1/p')
+        [ "$q0" = "0" ] && break
+        k=$((k + 1))
+    done
 
     # 2. 再加入音乐库（注意 clear 改为 false，不要求立刻播放）
     curl -s -X POST \
         "${url}/queue/items/add?expression=media_kind+is+music&clear=false" \
         >/dev/null 2>&1
     sleep 3
+
+    local sn=$(curl -s --connect-timeout 2 "${url}/library" 2>/dev/null | sed -n 's/.*"songs": *\([0-9][0-9]*\).*/\1/p')
+    local qn=$(curl -s --connect-timeout 2 "${url}/queue" 2>/dev/null | sed -n 's/.*"count": *\([0-9][0-9]*\).*/\1/p')
+    if [ -n "$sn" ] && [ -n "$qn" ] && [ "$qn" -gt "$sn" ]; then
+        logger -t owntone "autoplay: queue $qn > songs $sn, resetting queue"
+        curl -s -X PUT "${url}/queue/clear" >/dev/null 2>&1
+        sleep 2
+        curl -s -X POST "${url}/queue/items/add?expression=media_kind+is+music&clear=false" >/dev/null 2>&1
+        sleep 2
+    fi
+
+    # 入队后确认队列真的有歌（扫描/锁库时 add 可能失败，这里自动重试）
+    local try=0
+    while [ $try -lt 4 ]; do
+        local qn2=$(curl -s --connect-timeout 2 "${url}/queue" 2>/dev/null | sed -n 's/.*"count": *\([0-9][0-9]*\).*/\1/p')
+        if [ -n "$qn2" ] && [ "$qn2" -gt 0 ]; then
+            break
+        fi
+        sleep 12
+        curl -s -X PUT "${url}/queue/clear" >/dev/null 2>&1
+        sleep 2
+        curl -s -X POST "${url}/queue/items/add?expression=media_kind+is+music&clear=false" >/dev/null 2>&1
+        sleep 3
+        try=$((try + 1))
+    done
 
     if [ "$do_shuffle" = "1" ]; then
         curl -s -X PUT "${url}/player/shuffle?state=true"  >/dev/null 2>&1
@@ -155,6 +193,7 @@ owntone_watchdog() {
 			local enabled=$(uci_get_by_type owntone enabled 0)
 			if [ "$enabled" = "1" ]; then
 				logger -t owntone "watchdog: 检测到进程崩溃，正在自动重启..."
+				ensure_softvol
 				$SSD -p $PID -S -b -x $BIN -- -P $PID -c /var/etc/owntone.conf
 				
 		# 如果开启了自动播放，崩溃重启后延迟触发，避免数据库死锁
@@ -164,6 +203,87 @@ owntone_watchdog() {
 				fi			fi
 		fi
 	done
+}
+
+# 启动前确保 SOFTVOL 控件存在；不存在就按当前声卡重建 /etc/asound.conf
+ensure_softvol() {
+	local conf=/etc/asound.conf
+	local card num
+	card=$(sed -n 's/.*pcm "hw:\([^",]*\),.*/\1/p' "$conf" 2>/dev/null | head -n 1)
+
+	if [ -z "$card" ]; then
+		set -- $(sed -n 's/^ *\([0-9][0-9]*\) \[\([^ ]*\).*/\1 \2/p' /proc/asound/cards 2>/dev/null | head -n 1)
+		num=$1
+		card=$2
+	fi
+
+	if [ -z "$card" ]; then
+		logger -t owntone "softvol: 未检测到声卡，跳过检查"
+		return 1
+	fi
+
+	case "$card" in
+		*[!0-9]*) num=$(sed -n "s/^ *\([0-9][0-9]*\) \[$card .*/\1/p" /proc/asound/cards 2>/dev/null | head -n 1) ;;
+		*) num=$card ;;
+	esac
+	[ -z "$num" ] && num=0
+
+	if amixer -c "$num" scontrols 2>/dev/null | grep -q "'Softvol'"; then
+		return 0
+	fi
+
+	if [ ! -f "$conf" ] || ! grep -q 'pcm.softvol' "$conf" || ! grep -q 'name "Softvol"' "$conf"; then
+		[ -f "$conf" ] && cp -f "$conf" "$conf.bak-$(date +%Y%m%d-%H%M%S)"
+		cat > "$conf" <<EOF
+defaults.pcm.dmix.rate 44100
+defaults.pcm.dmix.format S16_LE
+
+pcm.!default {
+    type plug
+    slave.pcm "dmixer"
+}
+
+pcm.dmixer {
+    type dmix
+    ipc_key 1024
+    ipc_perm 0666
+    slave {
+        pcm "hw:$card,0"
+        period_time 0
+        period_size 1024
+        buffer_size 8192
+        rate 44100
+        format S16_LE
+    }
+    bindings { 0 0 1 1 }
+}
+ctl.dmixer {
+    type hw
+    card $card
+}
+
+pcm.softvol {
+    type softvol
+    slave.pcm "plug:dmixer"
+    control {
+        name "Softvol"
+        card $card
+    }
+}
+EOF
+		chmod 644 "$conf"
+		logger -t owntone "softvol: 已按声卡 $card 重建 /etc/asound.conf"
+	fi
+
+	aplay -D softvol /dev/zero -d 1 >/dev/null 2>&1
+	sleep 1
+
+	if amixer -c "$num" scontrols 2>/dev/null | grep -q "'Softvol'"; then
+		logger -t owntone "softvol: 控件就绪 (card=$num)"
+		return 0
+	fi
+	logger -t owntone "softvol: 重建后仍未找到 Softvol 控件"
+	return 1
 }
 
 start() {
@@ -189,7 +309,7 @@ start() {
 	rm -f $WATCHDOG_PID
 
     # 提前激活softvol软声卡防止播放器启动前找不到
-    aplay -D softvol /dev/zero -d 1 >/dev/null 2>&1
+    ensure_softvol
     sleep 1
 
 	# 启动 owntone 主进程
