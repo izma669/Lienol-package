@@ -21,6 +21,32 @@ function updateMarquee(htmlStr, color) {
     np.innerHTML = '<span class="marquee-content">' + htmlStr + '</span>';
 }
 
+// 把后端算好的“人话提示”画出来（不再只显示 500/API 之类的原始报错）
+function renderOwntoneHints(target, hints) {
+    var box = (typeof target === 'string') ? document.getElementById(target) : target;
+    if (!box) return;
+    box.innerHTML = '';
+    if (!hints || !hints.length) return;
+
+    var styles = {
+        error: { bg: '#fdecea', bd: '#f0b4ae', fg: '#a12b22', icon: '⛔' },
+        warn:  { bg: '#fff6e0', bd: '#f0d59a', fg: '#8a5a00', icon: '⚠' },
+        info:  { bg: '#eaf4fd', bd: '#b7d8f5', fg: '#215a8a', icon: 'ℹ' },
+        ok:    { bg: '#eaf7ec', bd: '#b9e2c0', fg: '#1e6b2e', icon: '✓' }
+    };
+
+    for (var i = 0; i < hints.length; i++) {
+        var h = hints[i] || {};
+        var c = styles[h.level] || styles.info;
+        var d = document.createElement('div');
+        d.style.cssText = 'background:' + c.bg + ';border:1px solid ' + c.bd + ';color:' + c.fg +
+            ';border-radius:4px;padding:6px 10px;margin:4px 0;font-size:13px;line-height:1.5;';
+        d.textContent = c.icon + ' ' + (h.text || '');
+        box.appendChild(d);
+    }
+}
+window.renderOwntoneHints = renderOwntoneHints;
+
 // ★ 播放控制函数
 function playerControl(action, btn) {
     btn = btn || window.event.target;
@@ -37,7 +63,7 @@ function playerControl(action, btn) {
             btn.disabled = false;
             btn.innerText = oldText;
             if (xhr.status !== 200) {
-                var errMsg = '控制失败，请检查后端日志。';
+                var errMsg = '控制失败，请稍后再试。';
                 try {
                     var res = JSON.parse(xhr.responseText);
                     if (res && res.error) { errMsg = res.error; }
@@ -49,12 +75,14 @@ function playerControl(action, btn) {
     xhr.send('action=' + action);
 }
 
-XHR.poll(3, '<%=url([[admin]], [[nas]], [[owntone]], [[status]])%>', null,
+XHR.poll(5, '<%=url([[admin]], [[nas]], [[owntone]], [[status]])%>', null,
     function(x, data) {
         try {
             var tb = document.getElementById('owntone_status');
             var np = document.getElementById('owntone_now_playing');
             if (!tb || !np) return;
+
+            renderOwntoneHints('owntone_hints', (data && data.hints) ? data.hints : []);
 
             if (data && data.running) {
                 var links = "<em><b><font color=green>Music Remote Center <%:RUNNING%></font></b>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<input type=button value='<%:Open Web Interface%>' onclick=window.open('http://'+window.location.hostname+':3689') /></em>";
@@ -123,6 +151,8 @@ XHR.poll(3, '<%=url([[admin]], [[nas]], [[owntone]], [[status]])%>', null,
     <p id="owntone_now_playing">
         <em></em>
     </p>
+
+    <div id="owntone_hints" style="margin-top:6px;"></div>
 
     <!-- ★ 控制按钮组 -->
     <div style="margin-top: 15px; display: flex; gap: 10px; align-items: center;">

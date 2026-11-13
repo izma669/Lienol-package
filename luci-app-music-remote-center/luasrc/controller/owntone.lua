@@ -16,26 +16,138 @@ function index()
     entry({"admin", "nas", "owntone", "restart_service"}, call("action_restart_service")).leaf = true
     entry({"admin", "nas", "owntone", "player_control"}, call("player_control")).leaf = true
     entry({"admin", "nas", "owntone", "browse_dir"}, call("action_browse_dir")).leaf = true
+    entry({"admin", "nas", "owntone", "get_softvol"}, call("action_get_softvol")).leaf = true
+    entry({"admin", "nas", "owntone", "set_softvol"}, call("action_set_softvol")).leaf = true
+end
+
+-- 读取 OwnTone 日志末尾（和「日志查看」用的是同一份日志）
+local function read_owntone_log(n)
+    local fs = require "nixio.fs"
+    local out = ""
+    if fs.access("/var/log/owntone.log") then
+        out = luci.sys.exec("tail -n " .. tostring(n) .. " /var/log/owntone.log 2>/dev/null") or ""
+    end
+    if out == "" then
+        out = luci.sys.exec("logread -e owntone 2>/dev/null | tail -n " .. tostring(n)) or ""
+    end
+    return out
+end
+
+-- 取某个报错最后一次出现的时间距今多少秒（用来过滤已经过期的提示）
+local function last_event_age(log, needle)
+    local pos = nil
+    local i = 1
+    while true do
+        local p = log:find(needle, i, true)
+        if not p then break end
+        pos = p
+        i = p + #needle
+    end
+    if not pos then return nil end
+
+    local head = log:sub(1, pos)
+    local nl = head:match(".*()\n")
+    local line_start = nl and (nl + 1) or 1
+    local line = log:sub(line_start, pos + #needle)
+    local y, mo, d, h, mi, s =
+        line:match("(%d%d%d%d)%-(%d%d)%-(%d%d) (%d%d):(%d%d):(%d%d)")
+    if not y then return nil end
+    local t = os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d),
+                        hour = tonumber(h), min = tonumber(mi), sec = tonumber(s) })
+    return os.time() - t
+end
+
+-- 把日志里那些“JSON api request failed with error code 500”翻译成人话
+local function build_hints(e, log)
+    local hints = {}
+    local function add(level, text)
+        hints[#hints + 1] = { level = level, text = text }
+    end
+
+    if not e.running then
+        add("error", "OwnTone 服务没有运行。请到「基本设置」勾选 Enabled 并保存，或重启服务；如果启动后又退出，请看「日志查看」里的提示。")
+        return hints
+    end
+
+    if not e.api_ok then
+        add("warn", "OwnTone 进程在，但 3689 接口没有响应：可能还在启动（等 10 秒刷新看看），或者已经卡住（重启服务）。")
+    end
+
+    local lib = e.library or {}
+    if (lib.songs or 0) == 0 then
+        if lib.updating then
+            add("info", "正在扫描音乐库，还没有扫描到歌曲。首次扫描大约需要 1 分钟，扫描完成后才能播放。")
+        else
+            add("error", "音乐库是空的：一首歌都没有扫描到。请到「基本设置」检查“音乐目录”（当前：" ..
+                (e.directories ~= "" and e.directories or "未配置") .. "），确认目录存在后保存并重启服务。")
+        end
+    end
+
+    if log and log ~= "" then
+        local dir = log:match("Skipping library directory%s+([^,%s]+)")
+        if dir and (lib.songs or 0) == 0 then
+            add("error", "日志里出现「Skipping library directory " .. dir ..
+                "」：这个目录不存在或 SD 卡没有挂载，所以一首歌都没导入。")
+        end
+
+        local _, db_ok  = log:gsub("Database OK", "")
+        local _, db_bad = log:gsub("Database init failed", "")
+        local n2 = select(2, log:gsub("incompatible database", ""))
+        local n3 = select(2, log:gsub("database disk image is malformed", ""))
+        db_bad = db_bad + n2 + n3
+        if db_bad > db_ok then
+            add("error", "数据库 songs.db 打不开或已损坏。先重启一次服务；仍不行就检查 SD 卡文件系统，或删掉 songs.db 让它重新扫描。")
+        end
+
+        local _, busy    = log:gsub("device or resource busy", "")
+        local _, nodev   = log:gsub("Could not open audio device", "")
+        local age_busy = last_event_age(log, "device or resource busy")
+        local age_nodev = last_event_age(log, "Could not open audio device")
+        if (busy + nodev > 0) and ((age_busy and age_busy <= 600) or (age_nodev and age_nodev <= 600)) then
+            add("warn", "音频设备被占用或没就绪：检查 USB 声卡是否插好，或到「高级设置」点“恢复 USB 声卡”。")
+        end
+
+        local age_play = last_event_age(log, "Error starting playback")
+        if age_play and age_play <= 600 then
+            add("warn", "刚刚有“开始播放失败”的记录。常见原因：播放队列是空的、音乐库还在扫描、或声卡被别的程序占用——不是网络问题。")
+        end
+
+        local age_dead = last_event_age(log, "Database deadlocked")
+        local age_lock = last_event_age(log, "database table is locked")
+        if (age_dead and age_dead <= 600) or (age_lock and age_lock <= 600) then
+            add("info", "日志里有数据库写入冲突（扫描和播放同时进行时会出现），属于临时现象，稍等几秒再点播放即可。")
+        end
+    end
+
+    if #hints == 0 then
+        add("ok", "运行正常。")
+    end
+    return hints
 end
 
 function act_status()
-    local e = { running = false, state = "unknown", title = "", artist = "", album = "" }
+    local e = { running = false, state = "unknown", title = "", artist = "", album = "",
+                api_ok = false, directories = "",
+                library = { songs = 0, updating = false } }
     e.running = luci.sys.call("pgrep owntone >/dev/null") == 0
 
+    local uci = require "luci.model.uci".cursor()
+    local port = uci:get("owntone", "owntone", "port") or "3689"
+    e.directories = uci:get_first("owntone", "owntone", "directories") or ""
+
     if e.running then
-        local uci = require "luci.model.uci".cursor()
-        local port = uci:get("owntone", "owntone", "port") or "3689"
         local player_json = luci.sys.exec(string.format(
-            "curl -s --connect-timeout 2 http://127.0.0.1:%s/api/player 2>/dev/null", port))
+            "curl -s --max-time 2 http://127.0.0.1:%s/api/player 2>/dev/null", port))
 
         if player_json and #player_json > 0 then
+            e.api_ok = true
             local st = player_json:match('"state"%s*:%s*"([^"]+)"')
             if st then e.state = st end
             local item_id = player_json:match('"item_id"%s*:%s*(%d+)')
 
             if (e.state == "play" or e.state == "pause") and item_id then
                 local q_json = luci.sys.exec(string.format(
-                    "curl -s --connect-timeout 2 \"http://127.0.0.1:%s/api/queue?id=now_playing\" 2>/dev/null", port))
+                    "curl -s --max-time 2 \"http://127.0.0.1:%s/api/queue?id=now_playing\" 2>/dev/null", port))
                 if q_json and #q_json > 0 then
                     e.title  = q_json:match('"title"%s*:%s*"([^"]*)"')  or ""
                     e.artist = q_json:match('"artist"%s*:%s*"([^"]*)"') or ""
@@ -43,7 +155,16 @@ function act_status()
                 end
             end
         end
+
+        local lib_json = luci.sys.exec(string.format(
+            "curl -s --max-time 2 http://127.0.0.1:%s/api/library 2>/dev/null", port))
+        if lib_json and #lib_json > 0 then
+            e.library.songs = tonumber(lib_json:match('"songs"%s*:%s*(%d+)')) or 0
+            e.library.updating = (lib_json:match('"updating"%s*:%s*(%a+)') == "true")
+        end
     end
+
+    e.hints = build_hints(e, read_owntone_log(200))
 
     luci.http.prepare_content("application/json")
     luci.http.write_json(e)
@@ -90,6 +211,83 @@ local function resolve_card(name)
         if first then control_name = first end
     end
     return card_num, card_name, control_name
+end
+
+-------------------------------------------------------------------------------
+-- SOFTVOL（asound.conf 里 softvol 插件创建的软件音量控件）
+-------------------------------------------------------------------------------
+local function asound_card_num()
+    local fs = require "nixio.fs"
+    local num = "0"
+    if fs.access("/etc/asound.conf") then
+        local conf = fs.readfile("/etc/asound.conf") or ""
+        local name = conf:match('pcm%s+"hw:([^,]+),')
+        if name then
+            if name:match("^%d+$") then
+                num = name
+            else
+                local cards = luci.sys.exec("cat /proc/asound/cards 2>/dev/null") or ""
+                for n, cname in cards:gmatch("(%d+) %[([^%]]+)%]") do
+                    if cname:gsub("%s+$", "") == name then num = n; break end
+                end
+            end
+        end
+    end
+    return num
+end
+
+local function softvol_state()
+    local card = asound_card_num()
+    local out = luci.sys.exec("amixer -c " .. card .. " sget Softvol 2>/dev/null") or ""
+    if not out:match("Softvol") then
+        -- softvol 控件要等 softvol 设备被打开一次之后才会出现
+        luci.sys.exec("aplay -D softvol /dev/zero -d 1 >/dev/null 2>&1")
+        out = luci.sys.exec("amixer -c " .. card .. " sget Softvol 2>/dev/null") or ""
+    end
+    local vol = out:match("%[(%d+)%%%]")
+    return {
+        available = (vol ~= nil),
+        card = card,
+        control = "Softvol",
+        volume = tonumber(vol) or 0,
+    }
+end
+
+function action_get_softvol()
+    local st = softvol_state()
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({
+        success   = st.available,
+        available = st.available,
+        card      = st.card,
+        control   = st.control,
+        volume    = st.volume,
+        error     = (not st.available) and "没有找到 SOFTVOL 控件（声卡可能还没就绪，先播放一次）" or nil,
+    })
+end
+
+function action_set_softvol()
+    local vol = luci.http.formvalue("volume") or ""
+    local ok, err = false, nil
+    if vol:match("^%d+$") then
+        local v = math.max(0, math.min(100, tonumber(vol)))
+        local card = asound_card_num()
+        local rc = luci.sys.call("amixer -c " .. card .. " sset Softvol " .. tostring(v) .. "% unmute >/dev/null 2>&1")
+        ok = (rc == 0)
+        if ok then
+            -- 同步给 OwnTone 的软件音量，避免它下次把自己的旧音量写回这个控件
+            local uci = require "luci.model.uci".cursor()
+            local port = uci:get("owntone", "owntone", "port") or "3689"
+            luci.sys.exec(string.format(
+                "curl -s -o /dev/null -X PUT 'http://127.0.0.1:%s/api/player/volume?volume=%d' 2>/dev/null", port, v))
+        else
+            err = "设置 SOFTVOL 失败（控件可能不存在，先播放一次再试）"
+        end
+    else
+        err = "音量值无效"
+    end
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({ success = ok, volume = tonumber(vol) or 0, error = err })
 end
 
 function action_get_soundcard_info()
@@ -395,9 +593,22 @@ function player_control()
         luci.http.prepare_content("application/json")
         luci.http.write_json({ success = true })
     else
+        -- 不再直接甩“500”，而是告诉用户实际原因和解法
+        local lib = luci.sys.exec(string.format(
+            "curl -s --max-time 2 'http://127.0.0.1:%s/api/library' 2>/dev/null", port))
+        local songs = tonumber(lib:match('"songs"%s*:%s*(%d+)')) or 0
+        local updating = (lib:match('"updating"%s*:%s*(%a+)') == "true")
+        local msg
+        if songs == 0 and updating then
+            msg = "音乐库正在扫描，还没有歌曲。等扫描完成（大约 1 分钟）再点播放。"
+        elseif songs == 0 then
+            msg = "音乐库是空的，没有可播放的歌曲。请到「基本设置」检查音乐目录是否正确。"
+        else
+            msg = "OwnTone 没能执行这个操作：播放队列可能是空的，或者音频设备被占用。可以到「日志查看」看具体原因。"
+        end
         luci.http.status(500, "API Error")
         luci.http.prepare_content("application/json")
-        luci.http.write_json({ success = false, error = "OwnTone API 返回状态码: " .. (http_code or "空") })
+        luci.http.write_json({ success = false, error = msg })
     end
 end
 

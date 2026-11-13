@@ -79,6 +79,78 @@ snd_vol.default = [[
 </script>
 ]]
 
+-- SOFTVOL 软件音量（asound.conf 里 softvol 控件，紧挨着物理声卡音量）
+local softvol = s:taboption("playback", DummyValue, "_softvol_vol", translate("SOFTVOL 音量控制"))
+softvol.rawhtml = true
+softvol.default = [[
+<div style="padding: 4px 0 12px 0;">
+    <div style="display: flex; align-items: center; gap: 12px; max-width: 400px;">
+        <input type="range" id="sv_vol_slider" min="0" max="100" value="50"
+               style="flex: 1; cursor: pointer;"
+               oninput="document.getElementById('sv_vol_val').innerText = this.value + '%'"
+               onchange="window.applySoftvolVolume(this.value)">
+        <span id="sv_vol_val" style="font-weight: bold; width: 45px; text-align: right;">--%</span>
+    </div>
+    <div id="sv_info" style="color: #666; font-size: 13px; margin-top: 6px;">正在读取 SOFTVOL 音量...</div>
+</div>
+<script type="text/javascript">
+(function() {
+    var base = '/cgi-bin/luci/admin/nas/owntone';
+
+    function paint(res) {
+        var s = document.getElementById('sv_vol_slider');
+        var v = document.getElementById('sv_vol_val');
+        var i = document.getElementById('sv_info');
+        if (!s) return;
+        if (res && res.available) {
+            s.disabled = false;
+            s.value = res.volume;
+            if (v) v.innerText = res.volume + '%';
+            if (i) i.innerHTML = '当前声卡: <b>hw:' + res.card + '</b> | 控制项: <b>Softvol</b>（软件音量）';
+        } else {
+            s.disabled = true;
+            if (v) v.innerText = '--%';
+            if (i) i.innerHTML = '<span style="color:#c80;">SOFTVOL 控件暂不可用（先播放一次，控件会自动出现）</span>';
+        }
+    }
+
+    window.loadSoftvolInfo = function() {
+        var x = new XMLHttpRequest();
+        x.open('GET', base + '/get_softvol', true);
+        x.onreadystatechange = function() {
+            if (x.readyState === 4 && x.status === 200) {
+                try { paint(JSON.parse(x.responseText)); } catch (e) {}
+            }
+        };
+        x.send();
+    };
+
+    window.applySoftvolVolume = function(val) {
+        var x = new XMLHttpRequest();
+        x.open('POST', base + '/set_softvol', true);
+        x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        x.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+        x.onreadystatechange = function() {
+            if (x.readyState === 4 && x.status === 200) {
+                try {
+                    var r = JSON.parse(x.responseText);
+                    if (r && !r.success && r.error) alert(r.error);
+                } catch (e) {}
+            }
+        };
+        x.send('volume=' + encodeURIComponent(val));
+    };
+
+    setTimeout(window.loadSoftvolInfo, 500);
+    setInterval(function() {
+        var s = document.getElementById('sv_vol_slider');
+        if (s && document.activeElement === s) return;
+        window.loadSoftvolInfo();
+    }, 5000);
+})();
+</script>
+]]
+
 autoplay = s:taboption("playback", Flag, "autoplay", translate("自动播放音乐库"))
 autoplay.default = "0"
 autoplay.rmempty = false
@@ -722,6 +794,33 @@ diag.cfgvalue = function(self, section)
 end
 
 -- ==================== 日志查看 ====================
+local log_diag = s:taboption("logs", DummyValue, "_log_diag")
+log_diag.rawhtml = true
+log_diag.default = [[
+<div id="owntone_log_diag" style="margin-bottom:10px;"></div>
+<script type="text/javascript">
+(function() {
+    function load() {
+        var x = new XMLHttpRequest();
+        x.open('GET', '/cgi-bin/luci/admin/nas/owntone/status', true);
+        x.onreadystatechange = function() {
+            if (x.readyState === 4 && x.status === 200) {
+                try {
+                    var d = JSON.parse(x.responseText);
+                    if (window.renderOwntoneHints) {
+                        window.renderOwntoneHints('owntone_log_diag', d.hints || []);
+                    }
+                } catch (e) {}
+            }
+        };
+        x.send();
+    }
+    setTimeout(load, 700);
+    setInterval(load, 15000);
+})();
+</script>
+]]
+
 refresh_btn = s:taboption("logs", DummyValue, "_refresh_btn")
 refresh_btn.rawhtml = true
 refresh_btn.default = [[
@@ -744,9 +843,9 @@ end
 
 function log_view.cfgvalue(self, section)
     local data
-    data = sys.exec("logread -e owntone -e forked-daapd 2>/dev/null | tail -n 200")
+    data = sys.exec("[ -f /var/log/owntone.log ] && tail -n 200 /var/log/owntone.log 2>/dev/null")
     if not data or data == "" then
-        data = sys.exec("[ -f /var/log/owntone.log ] && tail -n 200 /var/log/owntone.log 2>/dev/null")
+        data = sys.exec("logread -e owntone -e forked-daapd 2>/dev/null | tail -n 200")
     end
     if not data or data == "" then
         data = sys.exec("[ -f /tmp/log/owntone.log ] && tail -n 200 /tmp/log/owntone.log 2>/dev/null")
@@ -754,6 +853,28 @@ function log_view.cfgvalue(self, section)
     if not data or data == "" then
         data = translate("(暂无日志输出，请确认 Owntone 已启动)") .. "\n"
     end
+
+    -- 在常见的技术报错后面补一句人话，避免用户只看到 “error code 500”
+    local function annotate(line)
+        if line:find("error code 500 (/api/player/play)", 1, true) then
+            return line .. "    ← 播放失败：队列是空的，或音乐库正在扫描"
+        elseif line:find("error code 500 (/api/player/toggle)", 1, true) then
+            return line .. "    ← 播放/暂停失败：队列为空或正在扫描"
+        elseif line:find("Error starting playback", 1, true) then
+            return line .. "    ← 开始播放失败（不是网络问题，通常是没歌可播或声卡被占用）"
+        elseif line:find("Skipping library directory", 1, true) then
+            return line .. "    ← 音乐目录不存在或 SD 卡没挂载"
+        elseif line:find("Database deadlocked", 1, true)
+            or line:find("database table is locked", 1, true) then
+            return line .. "    ← 数据库写入冲突，稍等几秒会自动恢复"
+        elseif line:find("incompatible database", 1, true)
+            or line:find("Database init failed", 1, true) then
+            return line .. "    ← 数据库损坏或版本不兼容"
+        end
+        return line
+    end
+    data = data:gsub("([^\r\n]+)", annotate)
+
     return data
 end
 
