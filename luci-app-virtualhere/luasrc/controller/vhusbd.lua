@@ -295,21 +295,12 @@ function action_dispatch()
 		end
 
 	elseif action == "register" then
-		local ifname = luci.sys.exec("uci -q get network.lan.device 2>/dev/null"):gsub("%s+", "")
-		if ifname == "" then
-			ifname = luci.sys.exec("uci -q get network.lan.ifname 2>/dev/null"):gsub("%s+", "")
-		end
-		if ifname == "" then
-			ifname = "br-lan"
-		end
-
-		local mac = luci.sys.exec("cat /sys/class/net/" .. ifname .. "/address 2>/dev/null"):gsub("[:\n%s]", ""):lower()
-		if #mac ~= 12 then
-			mac = luci.sys.exec("cat /sys/class/net/eth0/address 2>/dev/null"):gsub("[:\n%s]", ""):lower()
-		end
+		-- 序列号 = eth0（WAN 物理口）的 MAC，直接读 sysfs
+		local mac = luci.sys.exec("cat /sys/class/net/eth0/address 2>/dev/null")
+		mac = mac:gsub("[:\n%s]", ""):lower()
 
 		if #mac ~= 12 then
-			out = "ERROR:无法获取有效 MAC 地址"
+			out = "ERROR:无法从 /sys/class/net/eth0/address 读取有效 MAC"
 		elseif not fs.access("/usr/bin/config.ini") then
 			out = "ERROR:配置文件 /usr/bin/config.ini 不存在"
 		else
@@ -318,7 +309,7 @@ function action_dispatch()
 			local after = fs.readfile(filepath) or ""
 
 			if after:find("License=" .. mac .. ",", 1, true) then
-				out = "SUCCESS:注册成功，序列号: " .. mac
+				out = "SUCCESS:注册成功，序列号: " .. mac .. "（取自 eth0）"
 			else
 				out = "ERROR:未找到可替换的 License 行，请检查 " .. filepath
 			end
