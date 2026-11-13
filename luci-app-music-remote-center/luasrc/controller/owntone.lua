@@ -377,6 +377,20 @@ function player_control()
     local http_code = luci.sys.exec(cmd)
     http_code = http_code:gsub("%s+", "")
 
+    -- 队列为空时 owntone 的 /api/player/toggle 会返回 500，
+    -- 自动把音乐库加入队列后再重试一次，避免第一次点播放就报错
+    if http_code ~= "200" and http_code ~= "204" and action == "toggle" then
+        local q = luci.sys.exec(string.format(
+            "curl -s --connect-timeout 2 'http://127.0.0.1:%s/api/queue' 2>/dev/null", port))
+        if q and q:match('"count"%s*:%s*0') then
+            luci.sys.exec(string.format(
+                "curl -s -X POST 'http://127.0.0.1:%s/api/queue/items/add?expression=media_kind+is+music&clear=false' >/dev/null 2>&1", port))
+            luci.sys.exec("sleep 2")
+            http_code = luci.sys.exec(cmd)
+            http_code = http_code:gsub("%s+", "")
+        end
+    end
+
     if http_code == "200" or http_code == "204" then
         luci.http.prepare_content("application/json")
         luci.http.write_json({ success = true })
