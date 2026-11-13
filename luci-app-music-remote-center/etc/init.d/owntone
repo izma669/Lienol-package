@@ -1,0 +1,227 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2020 OpenWrt.org
+
+START=99
+BIN=/usr/sbin/owntone
+PID=/var/run/owntone.pid
+WATCHDOG_PID=/var/run/owntone_watchdog.pid
+SSD=start-stop-daemon
+
+NAME=owntone
+
+uci_get_by_name() {
+	local ret=$(uci get $NAME.$1.$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+uci_get_by_type() {
+	local ret=$(uci get $NAME.@$1[0].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+gen_config_file() {
+
+	# 生成最精简的音频配置，让 OwnTone 使用默认软件音量
+	cat <<-EOF >/var/etc/owntone.conf
+general {
+	uid = "root"
+	db_path = "$(uci_get_by_type owntone db_path)"
+	logfile = "/var/log/owntone.log"
+	loglevel = log
+	ipv6 = yes
+	cache_path = "/var/owntone-cache.db"
+}
+
+library {
+    name = "$(uci_get_by_type owntone player_name 'My Music on OpenWrt')"
+    port = $(uci_get_by_type owntone port 3689)
+    directories = { "$(uci_get_by_type owntone directories)" }
+    podcasts = { "/Podcasts" }
+    audiobooks = { "/Audiobooks" }
+    compilations = { "/Compilations" }
+    compilation_artist = "Various Artists"
+}
+
+mpd {
+    port = $(uci_get_by_type owntone mpd_port '6600')
+}
+
+audio {
+    nickname = "Local Audio Output"
+    type = "alsa"
+    card = "softvol"
+    mixer = "Softvol"
+    mixer_device = "hw:0"
+}
+EOF
+}
+
+# ============================================================
+# 自动播放整个音乐库
+# ============================================================
+autoplay_library() {
+    # 加锁，防止并发执行
+    local LOCK_FILE=/var/run/owntone_autoplay.lock
+    if [ -f "$LOCK_FILE" ]; then
+        local old_pid=$(cat "$LOCK_FILE" 2>/dev/null)
+        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+            logger -t owntone "autoplay: 已在运行中 (PID: $old_pid)，跳过本次触发"
+            return 1
+        fi
+    fi
+    echo $$ > "$LOCK_FILE"
+    
+    # 脚本退出时删除锁文件
+    trap 'rm -f "$LOCK_FILE"' EXIT
+
+    local port=$(uci_get_by_type owntone port 3689)
+    local do_shuffle=$(uci_get_by_type owntone autoplay_random 0)
+    local do_repeat=$(uci_get_by_type owntone autoplay_repeat 0)
+    local url="http://127.0.0.1:${port}/api"
+    local i=0
+
+    command -v curl >/dev/null 2>&1 || {
+        logger -t owntone "autoplay: curl not found, skip"
+        return 1
+    }
+
+    # 阶段1：等 HTTP API 就绪（最多 60 秒）
+    while [ $i -lt 60 ]; do
+        curl -s -o /dev/null "${url}/player" && break
+        sleep 1
+        i=$((i + 1))
+    done
+
+    if [ $i -ge 60 ]; then
+        logger -t owntone "autoplay: API not ready after 60s, skip"
+        return 1
+    fi
+
+     # 阶段2：等音乐库扫描完成（最多再等 120 秒）
+    local j=0
+    while [ $j -lt 120 ]; do
+        # 改用 /api/library，检查是否返回了歌曲数量（正常时字段为 "songs"）
+        local library_json=$(curl -s --connect-timeout 2 "${url}/library" 2>/dev/null)
+        if echo "$library_json" | grep -qE '"songs"|"tracks"|"uri"'; then
+            break
+        fi
+        sleep 2
+        j=$((j + 2))
+    done
+
+    if [ $j -ge 120 ]; then
+        logger -t owntone "autoplay: library scan not ready after 120s, skip"
+        return 1
+    fi
+
+        # 阶段3：稍微等一下数据库写入空闲（延长到 10 秒，等 vacuum 彻底结束）
+    sleep 10
+
+    # 1. 先清空队列（减轻单次请求压力）
+    curl -s -X PUT "${url}/queue/clear" >/dev/null 2>&1
+    sleep 2
+
+    # 2. 再加入音乐库（注意 clear 改为 false，不要求立刻播放）
+    curl -s -X POST \
+        "${url}/queue/items/add?expression=media_kind+is+music&clear=false" \
+        >/dev/null 2>&1
+    sleep 3
+
+    if [ "$do_shuffle" = "1" ]; then
+        curl -s -X PUT "${url}/player/shuffle?state=true"  >/dev/null 2>&1
+    else
+        curl -s -X PUT "${url}/player/shuffle?state=false" >/dev/null 2>&1
+    fi
+
+    if [ "$do_repeat" = "1" ]; then
+        curl -s -X PUT "${url}/player/repeat?state=all"  >/dev/null 2>&1
+    else
+        curl -s -X PUT "${url}/player/repeat?state=off" >/dev/null 2>&1
+    fi
+
+    curl -s -X PUT "${url}/player/play" >/dev/null 2>&1
+    logger -t owntone "autoplay: library playback started (shuffle=${do_shuffle}, repeat=${do_repeat})"
+}
+
+# ============================================================
+# 看门狗：定时检测进程，崩溃后自动重启
+# ============================================================
+owntone_watchdog() {
+	while true; do
+		sleep 10
+		# 检查 PID 文件是否存在且进程是否存活
+		if [ ! -f $PID ] || ! kill -0 $(cat $PID) 2>/dev/null; then
+			# 仅当 UCI 中服务为启用状态时才重启
+			local enabled=$(uci_get_by_type owntone enabled 0)
+			if [ "$enabled" = "1" ]; then
+				logger -t owntone "watchdog: 检测到进程崩溃，正在自动重启..."
+				$SSD -p $PID -S -b -x $BIN -- -P $PID -c /var/etc/owntone.conf
+				
+		# 如果开启了自动播放，崩溃重启后延迟触发，避免数据库死锁
+				local autoplay=$(uci_get_by_type owntone autoplay 0)
+				if [ "$autoplay" = "1" ]; then
+					( sleep 15; autoplay_library ) &
+				fi			fi
+		fi
+	done
+}
+
+start() {
+    # 首次启动延迟（仅系统开机时生效，手动重启不延迟）
+    local DELAY_FLAG=/tmp/.owntone_boot_done
+    if [ ! -f "$DELAY_FLAG" ]; then
+        local delay=$(uci_get_by_type owntone delay_start 10)
+        [ "$delay" -gt 0 ] 2>/dev/null && {
+            logger -t owntone "首次启动，延迟 ${delay} 秒等待系统就绪..."
+            sleep "$delay"
+        }
+        touch "$DELAY_FLAG"
+    fi
+
+	gen_config_file
+	mkdir -p /var/cache/owntone
+
+	local enabled=$(uci_get_by_type owntone enabled 0)
+	[ "$enabled" = "0" ] && return 1
+
+	# 先清理可能残留的看门狗进程
+	[ -f $WATCHDOG_PID ] && kill $(cat $WATCHDOG_PID) 2>/dev/null
+	rm -f $WATCHDOG_PID
+
+    # 提前激活softvol软声卡防止播放器启动前找不到
+    aplay -D softvol /dev/zero -d 1 >/dev/null 2>&1
+    sleep 1
+
+	# 启动 owntone 主进程
+	$SSD -p $PID -S -b -x $BIN -- -P $PID -c /var/etc/owntone.conf
+
+	# 启动看门狗（后台运行，并保存其 PID）
+	owntone_watchdog >/dev/null 2>&1 &
+	echo $! > $WATCHDOG_PID
+
+	# ---- 自动播放开关 ----
+	local autoplay=$(uci_get_by_type owntone autoplay 0)
+	if [ "$autoplay" = "1" ]; then
+		# 后台执行，不阻塞服务启动
+		autoplay_library &
+	fi
+}
+
+stop() {
+	# 先停止看门狗，防止它反复拉起 owntone
+	if [ -f $WATCHDOG_PID ]; then
+		kill $(cat $WATCHDOG_PID) 2>/dev/null
+		rm -f $WATCHDOG_PID
+	fi
+	$SSD -p $PID -K -s SIGINT >/dev/null
+}
+
+restart() {
+	stop
+	local i=0
+	while [ -f $PID ] && [ $i -lt 10 ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+	start
+}
