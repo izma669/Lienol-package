@@ -639,10 +639,56 @@ snd_refresh.default = [[
 </script>
 ]]
 
+local usb_fix = s:taboption("advanced", DummyValue, "_usb_fix", translate("恢复 USB 声卡（重新绑定驱动）"))
+usb_fix.rawhtml = true
+usb_fix.default = [[
+<div style="padding: 10px 0;">
+    <button type="button" class="cbi-button cbi-button-apply" id="usb_fix_btn" onclick="fixUsbAudio()">恢复 USB 声卡</button>
+    <span id="usb_fix_msg" style="margin-left:10px;color:#888;font-size:12px;"></span>
+    <div style="color:#888;font-size:12px;line-height:1.7;margin-top:8px;">
+        <b>作用：</b>VirtualHere 共享过 USB 声卡后，内核可能不会自动把接口绑回 snd-usb-audio，导致“没有声卡”。<br>
+        本按钮会：解绑接口 → 重载 snd-usb-audio → 绑回音频控制接口 → 重启 OwnTone / AirPlay / DLNA。<br>
+        <b>不用重启路由器</b>，几秒钟完成。
+    </div>
+</div>
+<script type="text/javascript">
+window.fixUsbAudio = function() {
+    var btn = document.getElementById('usb_fix_btn');
+    var msg = document.getElementById('usb_fix_msg');
+    if (!btn) return;
+    btn.disabled = true;
+    var old = btn.innerText;
+    btn.innerText = '处理中...';
+    if (msg) msg.innerText = '';
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', window.owntoneBaseUrl + '/usb_audio_refresh', true);
+    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState !== 4) return;
+        btn.disabled = false;
+        btn.innerText = old;
+        try {
+            var r = JSON.parse(xhr.responseText);
+            if (r.success) {
+                if (msg) { msg.style.color = '#0a8f2c'; msg.innerText = '已恢复：' + (r.pcm || '').split('\n')[0]; }
+                alert('USB 声卡已恢复，服务已重启。');
+            } else {
+                if (msg) { msg.style.color = '#d9534f'; msg.innerText = '未能恢复，请确认声卡已插好'; }
+                alert('未能恢复声卡，请看下方 ALSA 诊断。');
+            }
+        } catch (e) {
+            if (msg) { msg.style.color = '#d9534f'; msg.innerText = '请求失败'; }
+        }
+    };
+    xhr.send();
+};
+</script>
+]]
+
 local reload_usb_btn = s:taboption("advanced", Button, "reload_usb_btn", translate("Reload USB Sound Loadable Kernel Module"))
 reload_usb_btn.inputstyle = "reload"
 function reload_usb_btn.write(self, section)
-    sys.call("rmmod snd_usb_audio >/dev/null 2>&1; modprobe snd_usb_audio >/dev/null 2>&1")
+    sys.call("/usr/bin/usb-audio-refresh.sh -r >/dev/null 2>&1")
 end
 
 local alsa_init_btn = s:taboption("advanced", Button, "alsa_init_btn", translate("Initialize All Sound Cards"))

@@ -10,6 +10,7 @@ function index()
     entry({"admin", "nas", "owntone", "set_volume"}, call("action_set_volume")).leaf = true
     entry({"admin", "nas", "owntone", "get_soundcard_info"}, call("action_get_soundcard_info")).leaf = true
     entry({"admin", "nas", "owntone", "refresh_soundcard"}, call("action_refresh_soundcard")).leaf = true
+    entry({"admin", "nas", "owntone", "usb_audio_refresh"}, call("action_usb_audio_refresh")).leaf = true
     entry({"admin", "nas", "owntone", "apply_schedule"}, call("action_apply_schedule")).leaf = true
     entry({"admin", "nas", "owntone", "sync_schedule"}, call("action_sync_schedule")).leaf = true
     entry({"admin", "nas", "owntone", "restart_service"}, call("action_restart_service")).leaf = true
@@ -113,6 +114,20 @@ function action_set_volume()
     end
     luci.http.prepare_content("application/json")
     luci.http.write_json({ success = true })
+end
+
+function action_usb_audio_refresh()
+    local sys = require "luci.sys"
+    local out = sys.exec("/usr/bin/usb-audio-refresh.sh -r 2>&1") or ""
+    local cards = sys.exec("cat /proc/asound/cards 2>/dev/null") or ""
+    local pcm = sys.exec("cat /proc/asound/pcm 2>/dev/null") or ""
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({
+        success = (#pcm > 0),
+        cards = cards,
+        pcm = pcm,
+        output = out
+    })
 end
 
 function action_refresh_soundcard()
