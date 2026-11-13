@@ -152,8 +152,6 @@ XHR.poll(5, '<%=url([[admin]], [[nas]], [[owntone]], [[status]])%>', null,
         <em></em>
     </p>
 
-    <div id="owntone_hints" style="margin-top:6px;"></div>
-
     <!-- ★ 控制按钮组 -->
     <div style="margin-top: 15px; display: flex; gap: 10px; align-items: center;">
         <button type="button" class="cbi-button" onclick="playerControl('previous', this)">⏮ 上一曲</button>
@@ -161,4 +159,6 @@ XHR.poll(5, '<%=url([[admin]], [[nas]], [[owntone]], [[status]])%>', null,
         <button type="button" class="cbi-button" onclick="playerControl('next', this)">⏭ 下一曲</button>
         <span id="player_ctrl_status" style="color:#888;font-size:12px;margin-left:5px;"></span>
     </div>
+
+    <div id="owntone_hints" style="margin-top:10px;"></div>
 </fieldset>

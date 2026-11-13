@@ -108,13 +108,13 @@ local function build_hints(e, log)
         end
 
         local age_play = last_event_age(log, "Error starting playback")
-        if age_play and age_play <= 600 then
+        if age_play and age_play <= 600 and e.state ~= "play" then
             add("warn", "刚刚有“开始播放失败”的记录。常见原因：播放队列是空的、音乐库还在扫描、或声卡被别的程序占用——不是网络问题。")
         end
 
         local age_dead = last_event_age(log, "Database deadlocked")
         local age_lock = last_event_age(log, "database table is locked")
-        if (age_dead and age_dead <= 600) or (age_lock and age_lock <= 600) then
+        if ((age_dead and age_dead <= 600) or (age_lock and age_lock <= 600)) and e.state ~= "play" then
             add("info", "日志里有数据库写入冲突（扫描和播放同时进行时会出现），属于临时现象，稍等几秒再点播放即可。")
         end
     end

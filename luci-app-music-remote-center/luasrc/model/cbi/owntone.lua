@@ -794,33 +794,6 @@ diag.cfgvalue = function(self, section)
 end
 
 -- ==================== 日志查看 ====================
-local log_diag = s:taboption("logs", DummyValue, "_log_diag")
-log_diag.rawhtml = true
-log_diag.default = [[
-<div id="owntone_log_diag" style="margin-bottom:10px;"></div>
-<script type="text/javascript">
-(function() {
-    function load() {
-        var x = new XMLHttpRequest();
-        x.open('GET', '/cgi-bin/luci/admin/nas/owntone/status', true);
-        x.onreadystatechange = function() {
-            if (x.readyState === 4 && x.status === 200) {
-                try {
-                    var d = JSON.parse(x.responseText);
-                    if (window.renderOwntoneHints) {
-                        window.renderOwntoneHints('owntone_log_diag', d.hints || []);
-                    }
-                } catch (e) {}
-            }
-        };
-        x.send();
-    }
-    setTimeout(load, 700);
-    setInterval(load, 15000);
-})();
-</script>
-]]
-
 refresh_btn = s:taboption("logs", DummyValue, "_refresh_btn")
 refresh_btn.rawhtml = true
 refresh_btn.default = [[
