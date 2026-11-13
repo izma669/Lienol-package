@@ -1,0 +1,11 @@
+#!/bin/sh
+# 用 luci-app-airplay2 自带的 init/config 覆盖 shairport-sync 包的默认文件
+if [ -f /usr/share/luci-app-airplay2/shairport-sync.init ]; then
+	cp -f /usr/share/luci-app-airplay2/shairport-sync.init /etc/init.d/shairport-sync
+	chmod 755 /etc/init.d/shairport-sync
+	/etc/init.d/shairport-sync enable 2>/dev/null
+fi
+if [ -f /usr/share/luci-app-airplay2/shairport-sync.config ] && [ ! -f /etc/config/shairport-sync ]; then
+	cp -f /usr/share/luci-app-airplay2/shairport-sync.config /etc/config/shairport-sync
+fi
+exit 0
