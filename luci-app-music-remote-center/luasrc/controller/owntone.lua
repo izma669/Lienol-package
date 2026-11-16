@@ -11,6 +11,8 @@ function index()
     entry({"admin", "nas", "owntone", "get_soundcard_info"}, call("action_get_soundcard_info")).leaf = true
     entry({"admin", "nas", "owntone", "refresh_soundcard"}, call("action_refresh_soundcard")).leaf = true
     entry({"admin", "nas", "owntone", "usb_audio_refresh"}, call("action_usb_audio_refresh")).leaf = true
+    entry({"admin", "nas", "owntone", "rebuild_db"}, call("action_rebuild_db")).leaf = true
+    entry({"admin", "nas", "owntone", "apply_volguard"}, call("action_apply_volguard")).leaf = true
     entry({"admin", "nas", "owntone", "apply_schedule"}, call("action_apply_schedule")).leaf = true
     entry({"admin", "nas", "owntone", "sync_schedule"}, call("action_sync_schedule")).leaf = true
     entry({"admin", "nas", "owntone", "restart_service"}, call("action_restart_service")).leaf = true
@@ -64,6 +66,57 @@ local function build_hints(e, log)
         hints[#hints + 1] = { level = level, text = text }
     end
 
+    -- 路径检查：数据库父目录不存在就自动创建；音乐库目录不存在就在信息提示里报出来
+    do
+        local fs = require "nixio.fs"
+        local uci_p = require("luci.model.uci").cursor()
+        local db = uci_p:get_first("owntone", "owntone", "db_path") or ""
+        local dirs = uci_p:get_first("owntone", "owntone", "directories") or ""
+
+        if db ~= "" then
+            local dbdir = db:match("^(.*)/[^/]+$")
+            if dbdir and dbdir ~= "" and not fs.access(dbdir) then
+                local top = dbdir:match("^(/mnt/[^/]+)")
+                if top and not fs.access(top) then
+                    add("error", "数据库目录不存在，且上级存储没有挂载：" .. dbdir .. "（请先挂载磁盘）")
+                elseif luci.sys.call("mkdir -p " .. string.format("%q", dbdir)) == 0 then
+                    add("ok", "数据库目录不存在，已自动创建：" .. dbdir)
+                else
+                    add("error", "数据库目录创建失败：" .. dbdir .. "（请检查权限或路径）")
+                end
+            end
+        end
+
+        if dirs ~= "" then
+            local first = dirs:match("^([^:%s]+)")
+            if first and not fs.access(first) then
+                add("error", "音乐库目录不存在：" .. first .. "（请检查存储是否挂载、路径是否正确）")
+            end
+        end
+    end
+
+    -- 数据库状态：扫描中 / 正常（已收录 N 首）/ 损坏（用「重建数据库」按钮）
+    do
+        local lib = e.library or {}
+        local fs = require "nixio.fs"
+        local uci_d = require("luci.model.uci").cursor()
+        local dbp = uci_d:get_first("owntone", "owntone", "db_path") or ""
+
+        if lib.updating then
+            add("info", "数据库正在扫描中：已收录 " .. tostring(lib.songs or 0) ..
+                " 首歌曲，扫描完成后会自动更新。")
+        elseif (lib.songs or 0) > 0 then
+            local sz = ""
+            if dbp ~= "" and fs.access(dbp) then
+                local st = fs.stat(dbp)
+                if st and st.size then
+                    sz = string.format("，数据库 %.1f MB", st.size / 1048576)
+                end
+            end
+            add("ok", "数据库正常：已收录 " .. tostring(lib.songs) .. " 首歌曲" .. sz)
+        end
+    end
+
     if not e.running then
         add("error", "OwnTone 服务没有运行。请到「基本设置」勾选 Enabled 并保存，或重启服务；如果启动后又退出，请看「日志查看」里的提示。")
         return hints
@@ -95,8 +148,8 @@ local function build_hints(e, log)
         local n2 = select(2, log:gsub("incompatible database", ""))
         local n3 = select(2, log:gsub("database disk image is malformed", ""))
         db_bad = db_bad + n2 + n3
-        if db_bad > db_ok then
-            add("error", "数据库 songs.db 打不开或已损坏。先重启一次服务；仍不行就检查 SD 卡文件系统，或删掉 songs.db 让它重新扫描。")
+        if db_bad > db_ok and (lib.songs or 0) == 0 then
+            add("error", "数据库 songs.db 打不开或已损坏：请到「基本设置」点“重建数据库”按钮（会删除 songs.db 并重新扫描）。")
         end
 
         local _, busy    = log:gsub("device or resource busy", "")
@@ -314,9 +367,121 @@ function action_set_volume()
     luci.http.write_json({ success = true })
 end
 
+function action_apply_volguard()
+    local sys = require "luci.sys"
+
+    local enabled = (luci.http.formvalue("enabled") == "1") and "1" or "0"
+    local safevol = (luci.http.formvalue("safevol") == "1") and "1" or "0"
+    local sv_vol  = luci.http.formvalue("safevol_volume") or "1"
+    if not sv_vol:match("^%d+$") or tonumber(sv_vol) > 100 then sv_vol = "1" end
+
+    local function uci_set(k, v)
+        sys.call("uci set 'owntone.@owntone[0]." .. k .. "=" .. v .. "' >/dev/null 2>&1")
+    end
+
+    uci_set("volguard_enabled", enabled)
+    uci_set("safevol_enabled", safevol)
+    uci_set("safevol_volume", sv_vol)
+
+    local count = 0
+    for i = 1, 4 do
+        local s = luci.http.formvalue("vg" .. i .. "_start") or ""
+        local e = luci.http.formvalue("vg" .. i .. "_end") or ""
+        local v = luci.http.formvalue("vg" .. i .. "_volume") or "5"
+        local t = luci.http.formvalue("vg" .. i .. "_target") or "both"
+
+        if not s:match("^%d%d:%d%d$") then s = "" end
+        if not e:match("^%d%d:%d%d$") then e = "" end
+        if not v:match("^%d+$") or tonumber(v) > 100 then v = "5" end
+        if t ~= "softvol" and t ~= "hw" then t = "both" end
+
+        local d = luci.http.formvalue("vg" .. i .. "_days") or ""
+        local dlist, seen = {}, {}
+        for ch in d:gmatch("%d") do
+            local n = tonumber(ch)
+            if n and n >= 1 and n <= 7 and not seen[n] then
+                seen[n] = true
+                dlist[#dlist + 1] = n
+            end
+        end
+        table.sort(dlist)
+        d = table.concat(dlist, ",")
+
+        uci_set("vg" .. i .. "_start", s)
+        uci_set("vg" .. i .. "_end", e)
+        uci_set("vg" .. i .. "_volume", v)
+        uci_set("vg" .. i .. "_target", t)
+        uci_set("vg" .. i .. "_days", d)
+
+        local en = (luci.http.formvalue("vg" .. i .. "_en") == "1") and "1" or "0"
+        uci_set("vg" .. i .. "_en", en)
+
+        if en == "1" and s ~= "" and e ~= "" then count = count + 1 end
+    end
+    sys.call("uci commit owntone >/dev/null 2>&1")
+
+    -- 清掉旧版本留下的 cron 行
+    local crontab = "/etc/crontabs/root"
+    local kept = {}
+    local changed = false
+    local f = io.open(crontab, "r")
+    if f then
+        for line in f:lines() do
+            if line:match("# owntone%-volguard") then
+                changed = true
+            else
+                table.insert(kept, line)
+            end
+        end
+        f:close()
+    end
+    if changed then
+        f = io.open(crontab, "w")
+        if f then
+            f:write(table.concat(kept, "\n") .. "\n")
+            f:close()
+        end
+        sys.call("/etc/init.d/cron restart >/dev/null 2>&1")
+    end
+
+    -- 守护进程由 owntone 服务带起，这里按新配置立刻执行一次即可
+    sys.call("sh /usr/bin/owntone-volguard.sh >/dev/null 2>&1")
+
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({
+        success = true, enabled = enabled, count = count, safevol = sv_vol
+    })
+end
+
+function action_rebuild_db()
+    local uci = require("luci.model.uci").cursor()
+    local db = uci:get_first("owntone", "owntone", "db_path") or ""
+    local fs = require "nixio.fs"
+
+    luci.sys.call("/etc/init.d/owntone stop >/dev/null 2>&1")
+    luci.sys.exec("sleep 2")
+
+    if db ~= "" then
+        if fs.access(db) then fs.unlink(db) end
+        if fs.access(db .. "-wal") then fs.unlink(db .. "-wal") end
+        if fs.access(db .. "-shm") then fs.unlink(db .. "-shm") end
+    end
+
+    local rc = luci.sys.call("/etc/init.d/owntone start >/dev/null 2>&1")
+    local err = nil
+    if rc ~= 0 then err = "启动服务失败，请查看日志查看" end
+
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({
+        success = (rc == 0),
+        db = db,
+        error = err
+    })
+end
+
 function action_usb_audio_refresh()
     local sys = require "luci.sys"
-    local out = sys.exec("/usr/bin/usb-audio-refresh.sh -r 2>&1") or ""
+    local out = sys.exec("sh /usr/bin/usb-audio-refresh.sh -r 2>&1") or ""
     local cards = sys.exec("cat /proc/asound/cards 2>/dev/null") or ""
     local pcm = sys.exec("cat /proc/asound/pcm 2>/dev/null") or ""
     luci.http.prepare_content("application/json")
