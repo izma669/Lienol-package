@@ -166,148 +166,202 @@ autoplay_repeat.default = "0"
 autoplay_repeat.rmempty = false
 autoplay_repeat:depends("autoplay", "1")
 
--- ==================== 定时控制音量 ====================
-for i = 1, 4 do
-    local time_opts = '<option value="">(未设置)</option>'
-    for h = 0, 23 do
-        for m = 0, 50, 10 do
-            local val = string.format("%02d:%02d", h, m)
-            time_opts = time_opts .. string.format('<option value="%s">%s</option>', val, val)
-        end
+-- ==================== 定时控制音量（音量守护，最多 4 段） ====================
+local vg_uci = require "luci.model.uci".cursor()
+local vg_enabled = vg_uci:get_first("owntone", "owntone", "volguard_enabled") or "0"
+local sv_enabled = vg_uci:get_first("owntone", "owntone", "safevol_enabled") or "1"
+local sv_vol     = vg_uci:get_first("owntone", "owntone", "safevol_volume") or "1"
+
+local vg_time_opts = '<option value="">(未设置)</option>'
+for vh = 0, 23 do
+    for vm = 0, 50, 10 do
+        local vval = string.format("%02d:%02d", vh, vm)
+        vg_time_opts = vg_time_opts .. string.format('<option value="%s">%s</option>', vval, vval)
     end
-
-    local vol_opts = '<option value="">(未设置)</option>'
-    for v = 0, 100, 1 do
-        vol_opts = vol_opts .. string.format('<option value="%d">%d%%</option>', v, v)
-    end
-
-    local html = string.format([[
-    <div style="display: flex; align-items: center; gap: 20px; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px dashed #eee;">
-        <div style="display: flex; align-items: center; min-width: 130px;">
-            <input type="checkbox" id="enable_time%d" name="enable_time%d" value="1" style="margin-right: 8px;" onchange="toggleScheduleRow(%d)">
-            <label for="enable_time%d" style="font-weight: bold; cursor: pointer; margin: 0;">启用定时音量 %d</label>
-        </div>
-        <div id="schedule_fields_%d" style="display: none; gap: 20px; align-items: flex-end;">
-            <div style="display: flex; flex-direction: column;">
-                <label style="font-size: 12px; color: #666; margin-bottom: 4px;">时间点 (HH:MM)</label>
-                <select name="time%d" id="time%d" style="width: 110px; height: 30px; border: 1px solid #ccc; border-radius: 3px; padding: 2px 5px;">%s</select>
-            </div>
-            <div style="display: flex; flex-direction: column;">
-                <label style="font-size: 12px; color: #666; margin-bottom: 4px;">控制目标</label>
-                <select name="target%d" id="target%d" style="width: 220px; height: 30px; border: 1px solid #ccc; border-radius: 3px; padding: 2px 5px;">
-                    <option value="softvol">OwnTone 软件音量（只影响本地播放）</option>
-                    <option value="hw">物理声卡音量（影响全部）</option>
-                </select>
-            </div>
-            <div style="display: flex; flex-direction: column;">
-                <label style="font-size: 12px; color: #666; margin-bottom: 4px;">音量 (%%)</label>
-                <select name="volume%d" id="volume%d" style="width: 90px; height: 30px; border: 1px solid #ccc; border-radius: 3px; padding: 2px 5px;">%s</select>
-            </div>
-        </div>
-    </div>
-    ]], i, i, i, i, i, i, i, i, time_opts, i, i, i, i, vol_opts)
-
-    local row_opt = s:taboption("schedule", DummyValue, "_schedule_row_" .. i)
-    row_opt.rawhtml = true
-    row_opt.default = html
+end
+local vg_vol_opts = ''
+for vv = 0, 100, 1 do
+    vg_vol_opts = vg_vol_opts .. string.format('<option value="%d">%d%%</option>', vv, vv)
+end
+local sv_vol_opts = ''
+for vv = 0, 100, 1 do
+    sv_vol_opts = sv_vol_opts .. string.format('<option value="%d">%d%%</option>', vv, vv)
 end
 
-local apply_btn = s:taboption("schedule", DummyValue, "_apply_schedule", translate("应用定时音量设置"))
+-- 把旧的 all/workday/weekend 转成 1..7 的列表；nil 表示“还没保存过”，默认每天
+local function days_norm(raw)
+    if raw == nil then return "1,2,3,4,5,6,7" end
+    if raw == "all" then return "1,2,3,4,5,6,7" end
+    if raw == "workday" then return "1,2,3,4,5" end
+    if raw == "weekend" then return "6,7" end
+    return raw
+end
+
+local intro = s:taboption("schedule", DummyValue, "_volguard_intro", translate("音量守护"))
+intro.rawhtml = true
+do
+    local tpl = [[
+<div style="margin:4px 0 12px 0;padding:8px 10px;border:1px solid #cfe3f7;background:#f6fbff;border-radius:4px;font-size:12px;color:#555;line-height:1.7;">
+  <b>音量守护</b>：重启或声卡重新插拔后先把音量压到“安全音量”，其余时间按下面时段锁定；每 5 秒检查一次，时段可跨夜，日期按星期勾选，每个时段可单独开关。
+  <div style="margin-top:6px;display:flex;align-items:center;gap:16px;justify-content:flex-start;">
+    <label style="display:flex;align-items:center;gap:5px;font-weight:bold;color:#333;">
+      <input type="checkbox" id="vg_enabled" __VG_CHK__> 启用守护
+    </label>
+    <label style="display:flex;align-items:center;gap:5px;color:#333;">
+      <input type="checkbox" id="sv_enabled" __SV_CHK__> 重启后先压到
+    </label>
+    <select id="sv_volume" style="width:62px;height:26px;border:1px solid #ccc;border-radius:3px;">__SV_OPTS__</select>
+  </div>
+</div>
+<script type="text/javascript">
+(function(){
+  function setSel(id, val){ var el=document.getElementById(id); if(!el) return; for(var i=0;i<el.options.length;i++){ if(el.options[i].value===val){ el.selectedIndex=i; return; } } }
+  setSel('sv_volume','__SV_VOL__');
+  var c1=document.getElementById('vg_enabled'); if(c1) c1.checked = ('__VG_EN__' === '1');
+  var c2=document.getElementById('sv_enabled'); if(c2) c2.checked = ('__SV_EN__' === '1');
+})();
+document.addEventListener('DOMContentLoaded', function(){
+  var rows = document.querySelectorAll('.cbi-value');
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].querySelector('[id^="vg"]')) {
+      var t = rows[i].querySelector('.cbi-value-title');
+      if (t) t.style.display = 'none';
+      var f = rows[i].querySelector('.cbi-value-field');
+      if (f) { f.style.width = '100%'; f.style.marginLeft = '0'; }
+    }
+  }
+});
+</script>
+]]
+    local html = tpl:gsub('__VG_CHK__', function() return (vg_enabled == "1") and "checked" or "" end)
+    html = html:gsub('__SV_CHK__', function() return (sv_enabled == "1") and "checked" or "" end)
+    html = html:gsub('__SV_OPTS__', function() return sv_vol_opts end)
+    html = html:gsub('__SV_VOL__', function() return sv_vol end)
+    html = html:gsub('__VG_EN__', function() return vg_enabled end)
+    html = html:gsub('__SV_EN__', function() return sv_enabled end)
+    intro.default = html
+end
+
+local row_tpl = [[
+<div style="display:flex;align-items:center;gap:8px;white-space:nowrap;overflow-x:auto;margin-bottom:8px;padding-bottom:8px;border-bottom:1px dashed #eee;font-size:13px;">
+  <label style="display:flex;align-items:center;gap:4px;font-weight:bold;min-width:96px;"><input type="checkbox" id="vg__I___en" __EN_CHK__> 时段 __I__</label>
+  <span style="color:#666;font-size:12px;">开始</span>
+  <select id="vg__I___start" style="width:66px;height:26px;border:1px solid #ccc;border-radius:3px;">__TIME_OPTS__</select>
+  <span style="color:#666;font-size:12px;">结束</span>
+  <select id="vg__I___end" style="width:66px;height:26px;border:1px solid #ccc;border-radius:3px;">__TIME_OPTS__</select>
+  <span style="color:#666;font-size:12px;">日期</span>
+  <span style="display:flex;gap:4px;align-items:center;">
+    <label style="display:flex;align-items:center;gap:1px;"><input type="checkbox" id="vg__I___d1">一</label>
+    <label style="display:flex;align-items:center;gap:1px;"><input type="checkbox" id="vg__I___d2">二</label>
+    <label style="display:flex;align-items:center;gap:1px;"><input type="checkbox" id="vg__I___d3">三</label>
+    <label style="display:flex;align-items:center;gap:1px;"><input type="checkbox" id="vg__I___d4">四</label>
+    <label style="display:flex;align-items:center;gap:1px;"><input type="checkbox" id="vg__I___d5">五</label>
+    <label style="display:flex;align-items:center;gap:1px;"><input type="checkbox" id="vg__I___d6">六</label>
+    <label style="display:flex;align-items:center;gap:1px;"><input type="checkbox" id="vg__I___d7">日</label>
+  </span>
+  <span style="color:#666;font-size:12px;">音量</span>
+  <select id="vg__I___volume" style="width:58px;height:26px;border:1px solid #ccc;border-radius:3px;">__VOL_OPTS__</select>
+  <span style="color:#666;font-size:12px;">目标</span>
+  <select id="vg__I___target" style="width:132px;height:26px;border:1px solid #ccc;border-radius:3px;">
+    <option value="both">OwnTone + 物理声卡</option>
+    <option value="softvol">只锁 OwnTone</option>
+    <option value="hw">只锁物理声卡</option>
+  </select>
+</div>
+<script type="text/javascript">
+(function(){
+  var days = '__DAYS__'.split(',');
+  for (var d = 1; d <= 7; d++) {
+    var el = document.getElementById('vg__I___d' + d);
+    if (el) el.checked = (days.indexOf('' + d) >= 0);
+  }
+  function setSel(id, val){ var el=document.getElementById(id); if(!el) return; for(var i=0;i<el.options.length;i++){ if(el.options[i].value===val){ el.selectedIndex=i; return; } } }
+  setSel('vg__I___start','__START__');
+  setSel('vg__I___end','__END__');
+  setSel('vg__I___volume','__VOL__');
+  setSel('vg__I___target','__TGT__');
+})();
+</script>
+]]
+
+for i = 1, 4 do
+    local s_start = vg_uci:get_first("owntone", "owntone", "vg" .. i .. "_start") or ""
+    local s_end   = vg_uci:get_first("owntone", "owntone", "vg" .. i .. "_end") or ""
+    local s_vol   = vg_uci:get_first("owntone", "owntone", "vg" .. i .. "_volume") or "5"
+    local s_tgt   = vg_uci:get_first("owntone", "owntone", "vg" .. i .. "_target") or "both"
+    local s_days  = days_norm(vg_uci:get_first("owntone", "owntone", "vg" .. i .. "_days"))
+    local s_en    = vg_uci:get_first("owntone", "owntone", "vg" .. i .. "_en")
+    if s_en == nil then s_en = "1" end
+
+    local html = row_tpl:gsub('__I__', function() return tostring(i) end)
+    html = html:gsub('__TIME_OPTS__', function() return vg_time_opts end)
+    html = html:gsub('__VOL_OPTS__', function() return vg_vol_opts end)
+    html = html:gsub('__START__', function() return s_start end)
+    html = html:gsub('__END__', function() return s_end end)
+    html = html:gsub('__DAYS__', function() return s_days end)
+    html = html:gsub('__VOL__', function() return s_vol end)
+    html = html:gsub('__TGT__', function() return s_tgt end)
+    html = html:gsub('__EN_CHK__', function() return (s_en == "1") and "checked" or "" end)
+
+    local row = s:taboption("schedule", DummyValue, "_volguard_row_" .. i)
+    row.rawhtml = true
+    row.default = html
+end
+
+local apply_btn = s:taboption("schedule", DummyValue, "_apply_volguard", translate("应用音量守护设置"))
 apply_btn.rawhtml = true
 apply_btn.default = [[
-
-<button type="button" class="cbi-button cbi-button-apply" onclick="applySchedule()">应用定时音量设置</button>
-<div id="schedule_status" style="color:#666;font-size:12px;margin-top:6px;"></div>
+<button type="button" class="cbi-button cbi-button-apply" onclick="applyVolGuard()">应用音量守护设置</button>
+<div id="vg_status" style="color:#666;font-size:12px;margin-top:6px;"></div>
 <script type="text/javascript">
-function toggleScheduleRow(index) {
-    var cb = document.getElementById('enable_time' + index);
-    var fields = document.getElementById('schedule_fields_' + index);
-    if (cb && fields) {
-        fields.style.display = cb.checked ? 'flex' : 'none';
+function vgVal(id){ var el=document.getElementById(id); return el ? el.value : ''; }
+function vgChk(id){ var el=document.getElementById(id); return (el && el.checked) ? '1' : '0'; }
+function vgDays(i){
+  var out = [];
+  for (var d = 1; d <= 7; d++) {
+    var el = document.getElementById('vg' + i + '_d' + d);
+    if (el && el.checked) out.push(d);
+  }
+  return out.join(',');
+}
+window.applyVolGuard = function(){
+  var st = document.getElementById('vg_status');
+  var p = {
+    enabled: vgChk('vg_enabled'),
+    safevol: vgChk('sv_enabled'),
+    safevol_volume: vgVal('sv_volume') || '1'
+  };
+  for (var i = 1; i <= 4; i++) {
+    p['vg' + i + '_en']     = vgChk('vg' + i + '_en');
+    p['vg' + i + '_start']  = vgVal('vg' + i + '_start');
+    p['vg' + i + '_end']    = vgVal('vg' + i + '_end');
+    p['vg' + i + '_days']   = vgDays(i);
+    p['vg' + i + '_volume'] = vgVal('vg' + i + '_volume') || '5';
+    p['vg' + i + '_target'] = vgVal('vg' + i + '_target') || 'both';
+  }
+  st.innerHTML = '<span style="color:#666;">提交中...</span>';
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '/cgi-bin/luci/admin/nas/owntone/apply_volguard', true);
+  xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+  xhr.onreadystatechange = function(){
+    if (xhr.readyState !== 4) return;
+    if (xhr.status === 200) {
+      try {
+        var r = JSON.parse(xhr.responseText);
+        st.innerHTML = r.success
+          ? '<span style="color:green;">✓ 已保存 ' + r.count + ' 个守护时段，安全音量 ' + r.safevol + '%%</span>'
+          : '<span style="color:red;">✗ 保存失败</span>';
+      } catch(e) {
+        st.innerHTML = '<span style="color:green;">✓ 已保存</span>';
+      }
+    } else {
+      st.innerHTML = '<span style="color:red;">✗ 失败 (HTTP ' + xhr.status + ')</span>';
     }
-}
-function getFlagValue(suffix) {
-    var el = document.getElementById(suffix);
-    return (el && el.checked) ? '1' : '0';
-}
-function getInputValue(suffix) {
-    var el = document.getElementById(suffix);
-    return el ? el.value : '';
-}
-function setFlagValue(suffix, val) {
-    var el = document.getElementById(suffix);
-    if (el) {
-        el.checked = (val === '1' || val === 1);
-        if (suffix.indexOf('enable_time') !== -1) {
-            var idx = suffix.replace('enable_time', '');
-            toggleScheduleRow(idx);
-        }
-    }
-}
-function setInputValue(suffix, val) {
-    var el = document.getElementById(suffix);
-    if (el) el.value = val;
-}
-
-function applySchedule() {
-    var params = {};
-    for (var i = 1; i <= 4; i++) {
-        params['enable_time' + i] = getFlagValue('enable_time' + i);
-        params['time' + i]        = getInputValue('time' + i);
-        params['target' + i]      = getInputValue('target' + i) || 'softvol';
-        params['volume' + i]      = getInputValue('volume' + i);
-    }
-    var status = document.getElementById('schedule_status');
-    status.innerHTML = '<span style="color:#666;">提交中...</span>';
-    var xhr = new XMLHttpRequest();
-    xhr.open('POST', '/cgi-bin/luci/admin/nas/owntone/apply_schedule', true);
-    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-    xhr.onreadystatechange = function() {
-        if (xhr.readyState === 4) {
-            if (xhr.status === 200) {
-                try {
-                    var res = JSON.parse(xhr.responseText);
-                    status.innerHTML = '<span style="color:green;">✓ 已更新 ' + (res.count || 0) + ' 条定时任务</span>';
-                } catch(e) {
-                    status.innerHTML = '<span style="color:green;">✓ 已提交</span>';
-                }
-            } else {
-                status.innerHTML = '<span style="color:red;">✗ 更新失败 (HTTP ' + xhr.status + ')</span>';
-            }
-        }
-    };
-    var body = Object.keys(params).map(function(k) {
-        return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
-    }).join('&');
-    xhr.send(body);
-}
-
-setTimeout(function() {
-    try {
-        var xhr = new XMLHttpRequest();
-        xhr.open('POST', '/cgi-bin/luci/admin/nas/owntone/sync_schedule', true);
-        xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
-        xhr.onreadystatechange = function() {
-            if (xhr.readyState === 4 && xhr.status === 200) {
-                try {
-                    var res = JSON.parse(xhr.responseText);
-                    if (res.success && res.tasks) {
-                        for (var i = 1; i <= 4; i++) {
-                            var t = res.tasks[i-1] || res.tasks[i] || { enable: '0', time: '', target: 'softvol', volume: '' };
-                            setFlagValue('enable_time' + i, t.enable);
-                            setInputValue('time' + i, t.time);
-                            setInputValue('target' + i, t.target);
-                            setInputValue('volume' + i, t.volume);
-                        }
-                    }
-                } catch(e) { console.log('sync parse error:', e); }
-            }
-        };
-        xhr.send();
-    } catch(e) { console.log('sync_schedule error:', e); }
-}, 800);
+  };
+  var body = Object.keys(p).map(function(k){ return encodeURIComponent(k) + '=' + encodeURIComponent(p[k]); }).join('&');
+  xhr.send(body);
+};
 </script>
-
 ]]
 
 -- ==================== 基本设置 ====================
@@ -327,7 +381,65 @@ directories = s:taboption("basic", Value, "directories", translate("Music Direct
 directories.default = "/opt/music"
 directories.rmempty = false
 
--- ===== 目录选择器 + 数据库文件名辅助输入框 =====
+local db_rebuild = s:taboption("basic", DummyValue, "_db_rebuild", "")
+db_rebuild.rawhtml = true
+db_rebuild.default = [[
+<div id="db_rebuild_holder" style="display:none;">
+  <button type="button" class="cbi-button cbi-button-reset" id="db_rebuild_btn" onclick="rebuildOwntoneDb()">重建数据库</button>
+  <span id="db_rebuild_desc" style="color:#888;font-size:12px;margin-left:8px;">删除 songs.db 后重新扫描，歌曲多时需要几分钟</span>
+</div>
+<script type="text/javascript">
+window.rebuildOwntoneDb = function() {
+    if (!confirm('确定删除数据库并重新扫描吗？')) return;
+    var btn = document.getElementById('db_rebuild_btn');
+    if (!btn) return;
+    btn.disabled = true;
+    var old = btn.innerText;
+    btn.innerText = '重建中...';
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', window.owntoneBaseUrl + '/rebuild_db', true);
+    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState !== 4) return;
+        btn.disabled = false;
+        btn.innerText = old;
+        if (xhr.status === 200) {
+            alert('已删除数据库并重启服务，正在重新扫描。');
+            setTimeout(function(){ location.reload(); }, 1500);
+        } else {
+            alert('操作失败 (HTTP ' + xhr.status + ')');
+        }
+    };
+    xhr.send();
+};
+// 把“重建数据库”按钮挪到“数据库文件路径”输入框右边，并隐藏原来那一行
+document.addEventListener('DOMContentLoaded', function() {
+    var holder = document.getElementById('db_rebuild_holder');
+    var btn = document.getElementById('db_rebuild_btn');
+    var desc = document.getElementById('db_rebuild_desc');
+    if (!holder || !btn) return;
+
+    var inputs = document.querySelectorAll('input[type="text"]');
+    var target = null;
+    for (var k = 0; k < inputs.length; k++) {
+        if (inputs[k].name && inputs[k].name.indexOf('.db_path') !== -1) { target = inputs[k]; break; }
+    }
+    if (!target) return;
+
+    var field = target.parentNode;
+    target.style.verticalAlign = 'middle';
+    btn.style.verticalAlign = 'middle';
+    btn.style.marginLeft = '8px';
+    field.appendChild(btn);
+    if (desc) { desc.style.verticalAlign = 'middle'; field.appendChild(desc); }
+
+    var row = holder;
+    while (row && ((' ' + (row.className || '') + ' ').indexOf(' cbi-value ') === -1)) { row = row.parentNode; }
+    if (row && row.className) { row.style.display = 'none'; }
+});
+</script>
+]]
+
 local dir_picker = s:taboption("basic", DummyValue, "_dir_picker", "")
 dir_picker.rawhtml = true
 dir_picker.default = [[
