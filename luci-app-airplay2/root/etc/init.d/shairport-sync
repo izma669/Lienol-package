@@ -1,0 +1,167 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/bin/shairport-sync
+
+append_str() {
+    local cfg="$1"
+    local file="$2"
+    local var="$3"
+    local name="$4"
+    local default="$5"
+    local val
+    config_get val "$cfg" "$var" "$default"
+    [ -n "$val" ] && echo -e "\t$name = \"$val\";" >> "$file"
+}
+
+append_yes_no() {
+    local cfg="$1"
+    local file="$2"
+    local var="$3"
+    local name="$4"
+    local default="$5"
+    local val
+    config_get val "$cfg" "$var" "$default"
+    case "$val" in
+        1|yes|on|true|enabled) val=yes ;;
+        *) val=no ;;
+    esac
+    echo -e "\t$name = \"$val\";" >> "$file"
+}
+
+append_num() {
+    local cfg="$1"
+    local file="$2"
+    local var="$3"
+    local name="$4"
+    local default="$5"
+    local val
+    config_get val "$cfg" "$var"
+    [ -z "$val" ] && val="$default"
+    [ -n "$val" ] && echo -e "\t$name = $val;" >> "$file"
+}
+
+start_instance() {
+    local cfg="$1"
+    local aux conf_custom conf_file
+
+    config_get_bool aux "$cfg" 'enabled' '0'
+    [ "$aux" -eq 1 ] || return 0
+
+    config_get_bool conf_custom "$cfg" 'conf_custom' '0'
+    config_get conf_file "$cfg" "conf_file"
+    if [ $conf_custom -ne 1 ] && [ ! -n "$conf_file" ]; then
+        conf_file="/var/etc/shairport-sync-${cfg}.conf"
+        echo -e "// Automatically generated from UCI config\n" > $conf_file
+
+        echo -e "general =" >> $conf_file
+        echo -e "{" >> $conf_file
+        append_str "$cfg" "$conf_file" name "name"
+        append_str "$cfg" "$conf_file" password "password"
+        append_str "$cfg" "$conf_file" interpolation "interpolation"
+        append_str "$cfg" "$conf_file" output_backend "output_backend"
+        append_str "$cfg" "$conf_file" mdns_backend "mdns_backend"
+        append_num "$cfg" "$conf_file" port "port" "5050"
+        append_num "$cfg" "$conf_file" udp_port_base "udp_port_base"
+        append_num "$cfg" "$conf_file" udp_port_range "udp_port_range"
+        append_str "$cfg" "$conf_file" statistics "statistics"
+        append_num "$cfg" "$conf_file" drift "drift"
+        append_num "$cfg" "$conf_file" resync_threshold "resync_threshold"
+        append_num "$cfg" "$conf_file" log_verbosity "log_verbosity"
+        append_str "$cfg" "$conf_file" ignore_volume_control "ignore_volume_control"
+        append_num "$cfg" "$conf_file" volume_range_db "volume_range_db"
+        append_str "$cfg" "$conf_file" regtype "regtype"
+        append_str "$cfg" "$conf_file" playback_mode "playback_mode"
+        echo -e "};\n" >> $conf_file
+
+        echo -e "metadata =" >> $conf_file
+        echo -e "{" >> $conf_file
+        append_yes_no "$cfg" "$conf_file" metadata_enabled "enabled" "yes"
+        append_yes_no "$cfg" "$conf_file" metadata_cover_art "include_cover_art" "yes"
+        append_str "$cfg" "$conf_file" metadata_pipe_name "pipe_name" "/tmp/shairport-sync-metadata"
+        append_num "$cfg" "$conf_file" metadata_pipe_timeout "pipe_timeout"
+        append_str "$cfg" "$conf_file" metadata_socket_address "socket_address"
+        append_num "$cfg" "$conf_file" metadata_socket_port "socket_port"
+        append_num "$cfg" "$conf_file" metadata_socket_msglength "socket_msglength"
+        echo -e "};\n" >> $conf_file
+
+        echo -e "sessioncontrol =" >> $conf_file
+        echo -e "{" >> $conf_file
+        append_str "$cfg" "$conf_file" sesctl_run_before_play_begins "run_this_before_play_begins"
+        append_str "$cfg" "$conf_file" sesctl_run_after_play_ends "run_this_after_play_ends"
+        append_str "$cfg" "$conf_file" sesctl_wait_for_completion "wait_for_completion"
+        append_str "$cfg" "$conf_file" sesctl_session_interruption "allow_session_interruption"
+        append_num "$cfg" "$conf_file" sesctl_session_timeout "session_timeout"
+        echo -e "};\n" >> $conf_file
+
+        echo -e "alsa =" >> $conf_file
+        echo -e "{" >> $conf_file
+        append_str "$cfg" "$conf_file" alsa_output_device "output_device"
+        append_str "$cfg" "$conf_file" alsa_mixer_control_name "mixer_control_name"
+        append_str "$cfg" "$conf_file" alsa_mixer_device "mixer_device"
+        local out_rate
+        config_get out_rate "$cfg" alsa_output_rate "44100"
+        case "$out_rate" in
+            ""|auto) out_rate=44100 ;;
+        esac
+        echo -e "\toutput_rate = $out_rate;" >> $conf_file
+        append_num "$cfg" "$conf_file" alsa_latency_offset "audio_backend_latency_offset"
+        append_num "$cfg" "$conf_file" alsa_buffer_length "audio_backend_buffer_desired_length"
+        append_str "$cfg" "$conf_file" alsa_disable_synchronization "disable_synchronization"
+        append_num "$cfg" "$conf_file" alsa_period_size "period_size"
+        append_num "$cfg" "$conf_file" alsa_buffer_size "buffer_size"
+        echo -e "};\n" >> $conf_file
+
+        echo -e "pipe =" >> $conf_file
+        echo -e "{" >> $conf_file
+        append_str "$cfg" "$conf_file" pipe_name "name"
+        append_num "$cfg" "$conf_file" pipe_latency_offset "audio_backend_latency_offset"
+        append_num "$cfg" "$conf_file" pipe_buffer_length "audio_backend_buffer_desired_length"
+        echo -e "};\n" >> $conf_file
+
+        echo -e "stdout =" >> $conf_file
+        echo -e "{" >> $conf_file
+        append_num "$cfg" "$conf_file" stdout_latency_offset "audio_backend_latency_offset"
+        append_num "$cfg" "$conf_file" stdout_buffer_length "audio_backend_buffer_desired_length"
+        echo -e "};\n" >> $conf_file
+
+        echo -e "ao =" >> $conf_file
+        echo -e "{" >> $conf_file
+        append_num "$cfg" "$conf_file" ao_latency_offset "audio_backend_latency_offset"
+        append_num "$cfg" "$conf_file" ao_buffer_length "audio_backend_buffer_desired_length"
+        echo -e "};\n" >> $conf_file
+    fi
+
+    procd_open_instance "shairport"
+    procd_set_param command $PROG -c $conf_file
+    procd_set_param respawn 3600 5 5
+    procd_close_instance
+
+    # ============================================
+    # 元数据读取器已合并到 luci-app-nginx-manager 的 music-center 服务：
+    #   /usr/bin/music-center-reader.lua
+    # 由 /etc/init.d/music-center 统一启动，避免两个 reader 同时写
+    # /tmp/shairport-now.json。这里不再单独起 reader。
+    # ============================================
+}
+
+start_service() {
+    config_load shairport-sync
+    # AirPlay 2 需要 nqptp 提供精确定时；有该服务就先拉起
+    if [ -x /etc/init.d/nqptp ]; then
+        /etc/init.d/nqptp start >/dev/null 2>&1
+    fi
+    config_foreach start_instance shairport-sync
+}
+
+stop_service() {
+    :
+}
+
+reload_service() {
+    stop
+    start
+}

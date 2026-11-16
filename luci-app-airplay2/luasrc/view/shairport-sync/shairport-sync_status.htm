@@ -1,0 +1,60 @@
+<script type="text/javascript">//<![CDATA[
+XHR.poll(3, '<%=url([[admin]], [[services]], [[shairport-sync]], [[status]])%>', null,
+	function(x, data) {
+		var tb = document.getElementById('shairport-sync_status');
+		if (data && tb) {
+			if (data.running) {
+				var links = '<em><b><font color=green>Apple AirPlay 2 Receiver <%:RUNNING%></font></b></em>';
+				tb.innerHTML = links;
+			} else {
+				tb.innerHTML = '<em><b><font color=red>Apple AirPlay 2 Receiver <%:NOT RUNNING%></font></b></em>';
+			}
+		}
+	}
+);
+//]]>
+</script>
+<style>.mar-10 {margin-left: 50px; margin-right: 10px;}</style>
+<fieldset class="cbi-section">
+	<p id="shairport-sync_status">
+		<em><%:Collecting data...%></em>
+	</p>
+	
+</fieldset>
+
+<script type="text/javascript">
+//<![CDATA[
+(function(){
+    function collapseBasic() {
+        var sections = document.querySelectorAll('.cbi-section');
+        for (var i = 0; i < sections.length; i++) {
+            var s = sections[i];
+            var titleEl = s.querySelector('h3, legend, .cbi-section-title');
+            if (!titleEl) continue;
+            var t = (titleEl.textContent || '').trim();
+            if (t !== '鍩烘湰璁剧疆') continue;
+            if (s.dataset.collapsed) return;
+            s.dataset.collapsed = '1';
+
+            var det = document.createElement('details');
+            det.style.cssText = 'margin: 12px 0; padding: 10px 16px; background: #fafbfc; border: 1px solid #e4e7ec; border-radius: 8px;';
+            var sum = document.createElement('summary');
+            sum.textContent = t;
+            sum.style.cssText = 'cursor: pointer; font-weight: 600; padding: 6px 0; user-select: none; color: #333;';
+            titleEl.style.display = 'none';
+
+            s.parentNode.insertBefore(det, s);
+            det.appendChild(sum);
+            det.appendChild(s);
+            det.open = false;
+            return;
+        }
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function(){ setTimeout(collapseBasic, 300); });
+    } else {
+        setTimeout(collapseBasic, 300);
+    }
+})();
+//]]>
+</script>
