@@ -286,6 +286,18 @@ EOF
 	return 1
 }
 
+# ---- 音量守护：常驻进程由 owntone 服务带起 ----
+owntone_volguard_start() {
+	owntone_volguard_stop
+	sh /usr/bin/owntone-volguard.sh daemon >/dev/null 2>&1 &
+}
+
+owntone_volguard_stop() {
+	[ -f /var/run/owntone-volguard.pid ] && kill "$(cat /var/run/owntone-volguard.pid)" 2>/dev/null
+	rm -f /var/run/owntone-volguard.pid
+	rm -rf /var/run/owntone-volguard.lock
+}
+
 start() {
     # 首次启动延迟（仅系统开机时生效，手动重启不延迟）
     local DELAY_FLAG=/tmp/.owntone_boot_done
@@ -314,6 +326,8 @@ start() {
 
 	# 启动 owntone 主进程
 	$SSD -p $PID -S -b -x $BIN -- -P $PID -c /var/etc/owntone.conf
+	owntone_volguard_start
+	( sleep 3; sh /usr/bin/owntone-volguard.sh safe ) >/dev/null 2>&1 &
 
 	# 启动看门狗（后台运行，并保存其 PID）
 	owntone_watchdog >/dev/null 2>&1 &
@@ -325,6 +339,7 @@ start() {
 		# 后台执行，不阻塞服务启动
 		autoplay_library &
 	fi
+	( sleep 3; sh /usr/bin/owntone-volguard.sh safe ) >/dev/null 2>&1 &
 }
 
 stop() {
@@ -333,6 +348,7 @@ stop() {
 		kill $(cat $WATCHDOG_PID) 2>/dev/null
 		rm -f $WATCHDOG_PID
 	fi
+	owntone_volguard_stop
 	$SSD -p $PID -K -s SIGINT >/dev/null
 }
 
