@@ -169,8 +169,80 @@ daemon_loop() {
 	done
 }
 
+
+# 输出当前状态（给 LuCI 页面实时显示用）：OwnTone 音量、物理声卡音量、SOFTVOL、当前命中时段
+status_json() {
+	local port vol card ctl hw soft now dow slot slot_s slot_e slot_v slot_t
+	port=$(cfg port); [ -n "$port" ] || port=3689
+
+	vol=$(curl -s -m 2 "http://127.0.0.1:${port}/api/player" 2>/dev/null | sed -n 's/.*"volume"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n 1)
+	[ -n "$vol" ] || vol=-1
+
+	card=0; ctl=""
+	if [ -f /etc/asound.conf ]; then
+		local name
+		name=$(sed -n 's/.*pcm "hw:\([^,]*\),.*/\1/p' /etc/asound.conf | head -n 1)
+		if [ -n "$name" ]; then
+			case "$name" in
+				*[!0-9]*) card=$(grep -m1 -F "[${name}" /proc/asound/cards 2>/dev/null | awk '{print $1}'); [ -n "$card" ] || card=0 ;;
+				*) card=$name ;;
+			esac
+		fi
+	fi
+	local ctrls
+	ctrls=$(amixer -c "$card" scontrols 2>/dev/null)
+	case "$ctrls" in
+		*"'Headphone'"*) ctl=Headphone ;;
+		*"'Master'"*)    ctl=Master ;;
+		*"'PCM'"*)       ctl=PCM ;;
+	esac
+
+	hw=-1; soft=-1
+	[ -n "$ctl" ] && hw=$(amixer -c "$card" sget "$ctl" 2>/dev/null | sed -n 's/.*\[\([0-9][0-9]*\)%\].*/\1/p' | head -n 1)
+	soft=$(amixer -c "$card" sget Softvol 2>/dev/null | sed -n 's/.*\[\([0-9][0-9]*\)%\].*/\1/p' | head -n 1)
+	[ -n "$hw" ] || hw=-1
+	[ -n "$soft" ] || soft=-1
+
+	now=$(( $(nz "$(date +%H)") * 60 + $(nz "$(date +%M)") ))
+	dow=$(date +%u)
+	slot=0; slot_s=""; slot_e=""; slot_v=""; slot_t=""
+
+	if [ "$(cfg volguard_enabled)" = "1" ]; then
+		local i s e d v t sm em inr
+		for i in 1 2 3 4; do
+			s=$(cfg "vg${i}_start"); e=$(cfg "vg${i}_end")
+			[ -n "$s" ] && [ -n "$e" ] || continue
+			[ "$(cfg "vg${i}_en")" = "0" ] && continue
+			d=$(cfg "vg${i}_days")
+			case "$d" in
+				all) ;;
+				workday) [ "$dow" -le 5 ] || continue ;;
+				weekend) [ "$dow" -ge 6 ] || continue ;;
+				"") continue ;;
+				*) case ",$d," in *",${dow},"*) ;; *) continue ;; esac ;;
+			esac
+			sm=$(to_min "$s"); em=$(to_min "$e")
+			if [ "$sm" -le "$em" ]; then
+				inr=0; [ "$now" -ge "$sm" ] && [ "$now" -lt "$em" ] && inr=1
+			else
+				inr=0; { [ "$now" -ge "$sm" ] || [ "$now" -lt "$em" ]; } && inr=1
+			fi
+			[ "$inr" = "1" ] || continue
+			slot=$i; slot_s=$s; slot_e=$e
+			v=$(cfg "vg${i}_volume"); [ -n "$v" ] || v=5
+			t=$(cfg "vg${i}_target"); [ -n "$t" ] || t=both
+			slot_v=$v; slot_t=$t
+			break
+		done
+	fi
+
+	printf '{"success":true,"owntone_volume":%s,"hw_volume":%s,"softvol_volume":%s,"hw_card":"%s","hw_control":"%s","slot":%s,"slot_start":"%s","slot_end":"%s","slot_volume":"%s","slot_target":"%s","now":"%s","dow":%s}\n' \
+		"$vol" "$hw" "$soft" "$card" "$ctl" "$slot" "$slot_s" "$slot_e" "$slot_v" "$slot_t" "$(date +%H:%M)" "$dow"
+}
+
 case "$MODE" in
 	safe)   safe_volume ;;
 	daemon) daemon_loop ;;
+	status) status_json ;;
 	*)      guard_once ;;
 esac

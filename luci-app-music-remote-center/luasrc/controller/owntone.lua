@@ -219,6 +219,21 @@ function act_status()
 
     e.hints = build_hints(e, read_owntone_log(200))
 
+    local vjson = luci.sys.exec("sh /usr/bin/owntone-volguard.sh status 2>/dev/null")
+    local vv = require("luci.jsonc").parse(vjson)
+    if type(vv) == "table" then
+        e.owntone_volume = vv.owntone_volume
+        e.hw_volume = vv.hw_volume
+        e.softvol_volume = vv.softvol_volume
+        e.hw_card = vv.hw_card
+        e.hw_control = vv.hw_control
+        e.active_slot = vv.slot
+        e.slot_start = vv.slot_start
+        e.slot_end = vv.slot_end
+        e.slot_volume = vv.slot_volume
+        e.slot_target = vv.slot_target
+    end
+
     luci.http.prepare_content("application/json")
     luci.http.write_json(e)
 end
@@ -366,6 +381,7 @@ function action_set_volume()
     luci.http.prepare_content("application/json")
     luci.http.write_json({ success = true })
 end
+
 
 function action_apply_volguard()
     local sys = require "luci.sys"

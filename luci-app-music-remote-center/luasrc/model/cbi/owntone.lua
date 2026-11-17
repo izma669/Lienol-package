@@ -76,6 +76,7 @@ snd_vol.default = [[
     };
 
     setTimeout(window.loadSoundcardInfo, 300);
+    setInterval(function(){ var s=document.getElementById('hw_vol_slider'); if (s && document.activeElement === s) return; window.loadSoundcardInfo(); }, 3000);
 </script>
 ]]
 
@@ -241,6 +242,50 @@ document.addEventListener('DOMContentLoaded', function(){
     html = html:gsub('__SV_EN__', function() return sv_enabled end)
     intro.default = html
 end
+
+local vg_state = s:taboption("schedule", DummyValue, "_volguard_state", "")
+vg_state.rawhtml = true
+vg_state.default = [[
+<div style="margin:0 0 12px 0;padding:8px 10px;border:1px solid #dcdcdc;background:#fcfcfc;border-radius:4px;font-size:13px;line-height:1.7;">
+  <span id="vg_state_text" style="color:#666;">读取中…</span>
+</div>
+<script type="text/javascript">
+(function(){
+  function vgTargetName(t){
+    if (t === 'softvol') return '只锁 OwnTone';
+    if (t === 'hw') return '只锁物理声卡';
+    return 'OwnTone + 物理声卡';
+  }
+  function vgNum(v){ return (typeof v === 'number' && v >= 0) ? (v + '%') : '--'; }
+  function vgRefreshState(){
+    var x = new XMLHttpRequest();
+    x.open('GET', '/cgi-bin/luci/admin/nas/owntone/status', true);
+    x.onreadystatechange = function(){
+      if (x.readyState !== 4 || x.status !== 200) return;
+      var r;
+      try { r = JSON.parse(x.responseText); } catch(e) { return; }
+      var box = document.getElementById('vg_state_text');
+      if (!box) return;
+      var slot;
+      if (r.active_slot && r.active_slot > 0) {
+        slot = '时段' + r.active_slot + '（' + r.slot_start + ' - ' + r.slot_end +
+               ' → ' + r.slot_volume + '%，目标：' + vgTargetName(r.slot_target) + '）';
+      } else {
+        slot = '无（当前不在任何启用的时段内）';
+      }
+      box.innerHTML = 'OwnTone 音量：<b>' + vgNum(r.owntone_volume) + '</b>' +
+        '　|　物理声卡（' + r.hw_control + '，card ' + r.hw_card + '）：<b>' + vgNum(r.hw_volume) + '</b>' +
+        '　|　SOFTVOL：<b>' + vgNum(r.softvol_volume) + '</b>' +
+        '　|　当前生效：<b>' + slot + '</b>';
+    };
+    x.send();
+  }
+  vgRefreshState();
+  setInterval(vgRefreshState, 3000);
+})();
+</script>
+]]
+
 
 local row_tpl = [[
 <div style="display:flex;align-items:center;gap:8px;white-space:nowrap;overflow-x:auto;margin-bottom:8px;padding-bottom:8px;border-bottom:1px dashed #eee;font-size:13px;">
