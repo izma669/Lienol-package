@@ -46,4 +46,5 @@ use_nft=$(uci -q get passwall.@global_forwarding[0].use_nft || echo "0")
 rm -f /tmp/luci-indexcache
 rm -rf /tmp/luci-modulecache/
 killall -HUP rpcd 2>/dev/null
+chmod 755 /etc/init.d/passwall /etc/init.d/passwall_server /usr/share/passwall/*.sh 2>/dev/null
 exit 0
