@@ -47,4 +47,5 @@ rm -f /tmp/luci-indexcache
 rm -rf /tmp/luci-modulecache/
 killall -HUP rpcd 2>/dev/null
 chmod 755 /etc/init.d/passwall /etc/init.d/passwall_server /usr/share/passwall/*.sh 2>/dev/null
+grep -q "^conf-dir=/tmp/dnsmasq.d$" /etc/dnsmasq.conf || echo "conf-dir=/tmp/dnsmasq.d" >> /etc/dnsmasq.conf
 exit 0
