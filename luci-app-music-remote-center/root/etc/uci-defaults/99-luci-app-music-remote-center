@@ -1,0 +1,45 @@
+#!/bin/sh
+# luci-app-music-remote-center 首次启动初始化：
+#   1) 注册 ucitrack（owntone 服务开关跟随 LuCI）
+#   2) 修正本包及常见应用脚本的可执行位（GitHub 网页上传会丢 755）
+#   3) 补上 PassWall 需要的 dnsmasq conf-dir
+#   4) 确保相关服务开机自启
+
+# 1) ucitrack
+uci -q batch <<-EOF >/dev/null
+	delete ucitrack.@owntone[-1]
+	add ucitrack owntone
+	set ucitrack.@owntone[-1].init=owntone
+	commit ucitrack
+EOF
+
+rm -f /tmp/luci-indexcache
+
+# 2) 可执行位（本包优先，其余为常见应用兜底）
+for f in \
+	/etc/init.d/owntone \
+	/usr/bin/owntone-volguard.sh \
+	/usr/bin/usb-audio-refresh.sh \
+	/usr/libexec/gmediarender-dl.sh \
+	/etc/init.d/gmediarender \
+	/etc/init.d/passwall /etc/init.d/passwall_server \
+	/usr/share/passwall/*.sh \
+	/etc/init.d/shairport-sync \
+	/usr/bin/xray /usr/bin/v2ray \
+	/etc/init.d/xray /etc/init.d/v2ray
+do
+	[ -f "$f" ] && chmod 755 "$f"
+done
+
+# 3) dnsmasq 加载 passwall 的 DNS 配置
+if [ -f /etc/dnsmasq.conf ]; then
+	grep -q '^conf-dir=/tmp/dnsmasq.d$' /etc/dnsmasq.conf || \
+		echo 'conf-dir=/tmp/dnsmasq.d' >> /etc/dnsmasq.conf
+fi
+
+# 4) 开机自启
+[ -f /etc/init.d/owntone ] && /etc/init.d/owntone enable 2>/dev/null
+[ -f /etc/init.d/passwall ] && /etc/init.d/passwall enable 2>/dev/null
+[ -f /etc/init.d/gmediarender ] && /etc/init.d/gmediarender enable 2>/dev/null
+
+exit 0
