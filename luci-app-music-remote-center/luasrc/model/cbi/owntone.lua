@@ -914,18 +914,6 @@ window.fixUsbAudio = function() {
 </script>
 ]]
 
-local reload_usb_btn = s:taboption("advanced", Button, "reload_usb_btn", translate("Reload USB Sound Loadable Kernel Module"))
-reload_usb_btn.inputstyle = "reload"
-function reload_usb_btn.write(self, section)
-    sys.call("/usr/bin/usb-audio-refresh.sh -r >/dev/null 2>&1")
-end
-
-local alsa_init_btn = s:taboption("advanced", Button, "alsa_init_btn", translate("Initialize All Sound Cards"))
-alsa_init_btn.inputstyle = "reload"
-function alsa_init_btn.write(self, section)
-    sys.call("alsactl init >/dev/null 2>&1")
-end
-
 local diag = s:taboption("advanced", DummyValue, "_alsa_diag", translate("ALSA 诊断"))
 diag.rawhtml = true
 diag.cfgvalue = function(self, section)
